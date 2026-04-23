@@ -7,10 +7,14 @@
     [features]
     preset_pack_admin = false      # gate Tab ③
 
-Blender の実行ファイルパスは config.ini では扱わない。``setup.sh`` /
-``setup.cmd`` がプロジェクト直下にポータブル版を配置するので、そこを基準に
-相対解決する (詳細は ``_bundled_blender_exe``)。明示的に差し替えたい場合は
-環境変数 ``SAM3DBODY_BLENDER_EXE`` を使う。
+    [blender]
+    exe_path =                     # absolute path to blender(.exe)
+
+Blender の実行ファイルの解決順:
+    1. 環境変数 ``SAM3DBODY_BLENDER_EXE`` (明示指定のエスケープハッチ)
+    2. ``config.ini`` の ``[blender] exe_path`` (setup.cmd/setup.sh が自動で書く)
+    3. プロジェクト直下の同梱ポータブル版 (``_bundled_blender_exe``)
+    4. ``PATH`` 上の ``blender`` / ``blender.exe``
 
 Values can still be overridden at launch time via env vars (`SAM3DBODY_*`).
 Legacy installs that only have ``active_preset.ini`` are migrated on the
@@ -103,6 +107,10 @@ def _ensure_config_ini(paths: AppPaths) -> None:
     cp["sam3"].setdefault("min_width_pixels", "0")
     cp["sam3"].setdefault("min_height_pixels", "0")
 
+    if "blender" not in cp:
+        cp["blender"] = {}
+    cp["blender"].setdefault("exe_path", "")
+
     with paths.config_ini.open("w", encoding="utf-8") as f:
         f.write(
             "# config.ini\n"
@@ -117,6 +125,9 @@ def _ensure_config_ini(paths: AppPaths) -> None:
             "#             exposes these — edit here to change them (hot-reload on each request).\n"
             "#               use_sam3, text_prompt, confidence_threshold,\n"
             "#               min_width_pixels, min_height_pixels\n"
+            "# [blender]   exe_path : absolute path to blender(.exe). Normally written by\n"
+            "#                        setup.cmd/setup.sh. Leave empty to fall back to the\n"
+            "#                        bundled portable build (or PATH).\n"
             "\n"
         )
         cp.write(f)
@@ -147,16 +158,34 @@ def _bundled_blender_exe() -> Path | None:
     return None
 
 
+def _config_blender_exe(paths: "AppPaths") -> str | None:
+    """config.ini の ``[blender] exe_path`` を読み、実在するファイルなら絶対パス
+    を返す。未設定または不在なら ``None``。"""
+    cp = _read_config_ini(paths)
+    raw = cp.get("blender", "exe_path", fallback="").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    p = Path(expanded)
+    if not p.is_file():
+        return None
+    return str(p.resolve())
+
+
 def _resolve_blender_exe() -> str:
     """Blender 実行ファイルを解決する。優先順:
       1. 環境変数 ``SAM3DBODY_BLENDER_EXE`` (明示指定のエスケープハッチ)
-      2. プロジェクト直下の同梱ポータブル版 (``_bundled_blender_exe``)
-      3. PATH 上の ``blender`` / ``blender.exe``
+      2. ``config.ini`` の ``[blender] exe_path`` (setup.cmd/setup.sh が自動で書く)
+      3. プロジェクト直下の同梱ポータブル版 (``_bundled_blender_exe``)
+      4. PATH 上の ``blender`` / ``blender.exe``
     どれも無ければ空文字を返し、呼び出し側で分かりやすいエラーを出させる。"""
     import shutil
     env = os.environ.get("SAM3DBODY_BLENDER_EXE")
     if env:
         return env
+    cfg = _config_blender_exe(get_paths())
+    if cfg:
+        return cfg
     bundled = _bundled_blender_exe()
     if bundled is not None:
         return str(bundled)

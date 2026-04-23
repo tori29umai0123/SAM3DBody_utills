@@ -22,9 +22,14 @@ htmlcov/
 uv.lock
 # wheels/ は配布物なのでバージョン管理に含める
 
-# Bundled Blender (setup.sh が配置する。将来は自動DL予定)
+# Bundled Blender (setup.sh / setup.cmd が配置する)
 /ARM_blender41-portable/
 /blender41-portable/
+# setup スクリプトがプロジェクト直下に一時的に置くアーカイブ (成功時は削除される)
+/blender-*-windows-x64.zip
+/blender-*-linux-x64.tar.xz
+/ARM_blender41-portable.tar.xz
+/ARM_blender41-portable.tar.xz.sha256
 
 # User-specific runtime state (自動保存されるユーザー設定)
 /presets/*/chara_settings_presets/autosave.json

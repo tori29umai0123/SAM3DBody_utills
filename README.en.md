@@ -90,7 +90,8 @@ Manage preset packs and regenerate blend-shape data from an FBX edited in Blende
 | PyTorch | x86_64 / Windows: 2.10.0+cu128<br>aarch64 (e.g. GB10 / sm_121): 2.13.0.dev (nightly) + cu130 |
 | CUDA | x86_64 / Windows: 12.8<br>aarch64: 13.0 (official Blackwell Ultra sm_121 support) |
 | GPU | NVIDIA GPU (≥ 4 GB VRAM recommended, 8 GB for comfort)<br>DGX Spark (GB10 / sm_121) supported |
-| Blender | 4.1.1 — `setup.sh` / `setup.cmd` auto-downloads a portable build, so no separate install is required |
+| Blender | 4.1.1 — enter your existing install path at setup, or press ENTER to let setup auto-download a portable build |
+| [uv](https://docs.astral.sh/uv/) | Required before running setup. Install from the official site if you don't have it. |
 
 The SAM 3D Body weights (~3.4 GB) stay resident on the GPU. CPU inference works but is considerably slower.
 
@@ -99,6 +100,8 @@ The SAM 3D Body weights (~3.4 GB) stay resident on the GPU. CPU inference works 
 
 ## 📦 Setup
 
+Install [uv](https://docs.astral.sh/uv/) first.
+
 ### Windows
 
 ```cmd
@@ -106,27 +109,40 @@ cd E:\SAM3DBody_utills
 setup.cmd
 ```
 
-`setup.cmd`:
-- Creates `.venv` (Python 3.11) via [uv](https://docs.astral.sh/uv/)
-- Installs dependencies from `pyproject.toml` / `uv.lock` (cu128 wheels for torch/torchvision/torchaudio)
-- Installs redistributable CUDA wheels bundled under `wheels/`
-- Downloads the official portable **Blender 4.1.1** (`blender-4.1.1-windows-x64.zip`, ~400 MB) into `blender41-portable/` (skipped if already present)
+Or double-click `setup.cmd` in Explorer.
 
-### Linux (x86_64 / aarch64)
+### Linux / macOS
 
 ```bash
 cd /path/to/SAM3DBody_utills
 ./setup.sh
 ```
 
-`setup.sh` performs the following automatically per architecture:
+### Two prompts during setup
 
-| Architecture | torch / triton | Portable Blender |
-|---|---|---|
-| x86_64 | cu128 stable (via pypi) | Official `blender-4.1.1-linux-x64.tar.xz` auto-DL from `download.blender.org` → `blender41-portable/` |
-| aarch64 (ARM64) | nightly cu130 + matching triton wheel (platform-split via `pyproject.toml`) | Self-built portable auto-DL from this repo's [GitHub Release (`blender-arm64-v1.0`)](https://github.com/tori29umai0123/SAM3DBody_utills/releases/tag/blender-arm64-v1.0) with sha256 check → `ARM_blender41-portable/` |
+**1. Rebuild `.venv`?**
 
-After extraction, `setup.sh` also injects `numpy` into Blender's bundled `site-packages/` (the self-built Blender does not ship it, which otherwise causes the FBX exporter to fail).
+```
+Delete .venv and reinstall all dependencies from scratch? [y/N]:
+```
+
+- Press Enter (default `N`) or `n` → keep the existing `.venv`; just run `uv sync` (fast).
+- Type `y` → wipe `.venv` and reinstall everything (several minutes — torch etc. get re-downloaded).
+- On a fresh install (no `.venv` yet) this prompt is skipped and a new venv is created automatically.
+
+**2. Blender path**
+
+```
+Blender path (ENTER to auto-download):
+```
+
+- **Use your existing Blender 4.1+**: paste the full path and press Enter (quotes allowed).
+  - Windows example: `C:\Program Files\Blender Foundation\Blender 4.1\blender.exe`
+  - Linux example:   `/opt/blender-4.1/blender`
+- **Auto-download**: press Enter. The official portable Blender 4.1.1 (~400 MB) is fetched into `blender41-portable/`.
+- Typing `n` / `skip` / `auto` also triggers auto-download.
+
+Linux ARM64 skips this prompt and always auto-downloads the self-built portable build (no widely-distributed standalone binary exists).
 
 ### Model weights
 
@@ -154,18 +170,26 @@ E:\SAM3DBody_utills\models\
 run.cmd
 ```
 
-Then open <http://127.0.0.1:8765/> in a browser.
-
-### Linux
+### Linux / macOS
 
 ```bash
 ./run.sh
 ```
 
-### Overriding host / port
+On startup the launcher prints the URLs to open in your browser (works from this PC and from other PCs on the same LAN):
+
+```
+Access URL:
+  http://127.0.0.1:8766       (this PC)
+  http://192.168.10.121:8766  (LAN)
+```
+
+- **Auto port fallback**: if the default 8765 is taken, the next free port is picked automatically.
+- **LAN-accessible by default**: the server binds to `0.0.0.0`. Set `SAM3DBODY_HOST=127.0.0.1` to restrict to localhost.
+- **Pin a port**: set `SAM3DBODY_PORT=9000` (or any other).
 
 ```cmd
-set SAM3DBODY_HOST=0.0.0.0
+set SAM3DBODY_HOST=127.0.0.1
 set SAM3DBODY_PORT=9000
 run.cmd
 ```
@@ -186,16 +210,22 @@ text_prompt = person              ; SAM3 text prompt
 confidence_threshold = 0.5
 min_width_pixels = 0
 min_height_pixels = 0
+
+[blender]
+exe_path =                        ; absolute path to blender(.exe) — written by setup
 ```
 
 Settings are hot-reloaded per request — no server restart needed.
 
 ### How the Blender executable is resolved
 
-`config.ini` does not carry a Blender path. `setup.sh` / `setup.cmd` drop a portable build next to the project, which the app resolves relatively in this order:
+`setup.cmd` / `setup.sh` writes your chosen (or auto-downloaded) path into `config.ini`'s `[blender] exe_path`. If you want to swap Blender without re-running setup, edit that value directly.
+
+Resolution order:
 
 1. `SAM3DBODY_BLENDER_EXE` environment variable (escape hatch for explicit overrides)
-2. Bundled portable Blender
+2. `[blender] exe_path` in `config.ini`
+3. Bundled portable Blender, if present
    - Windows: `blender41-portable/blender.exe`
    - Linux x86_64: `blender41-portable/blender`
    - Linux aarch64: `ARM_blender41-portable/bin/blender`
@@ -210,8 +240,9 @@ SAM3DBody_utills/
 ├── README.en.md                    ← this file (English)
 ├── config.ini
 ├── pyproject.toml
-├── run.cmd / run.sh                ← starts uvicorn
-├── setup.cmd / setup.sh            ← uv + dependency install
+├── run.cmd / run.sh                ← starts uvicorn (auto port fallback + LAN URL)
+├── setup.cmd / setup.sh            ← thin wrapper; boots Python 3.11 via uv and calls setup.py
+├── setup.py                        ← the real setup: reset → uv venv/sync → Blender path
 ├── wheels/                         ← redistributable CUDA wheels
 ├── blender41-portable/             ← setup-installed portable Blender (Win / Linux x86_64, auto-DL)
 ├── ARM_blender41-portable/         ← setup-installed portable Blender (Linux aarch64, auto-DL)
