@@ -15,8 +15,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import torch
 import torch.utils.data
 import torchvision
-from decord import cpu, VideoReader
 from iopath.common.file_io import g_pathmgr
+# decord は aarch64 Linux に wheel が無い。画像モード推論では動画フレーム経路
+# (.mp4@frame) を踏まないのでトップレベル import は避け、必要時に遅延ロードする。
 
 from PIL import Image as PILImage
 from PIL.Image import DecompressionBombError
@@ -202,6 +203,7 @@ class CustomCocoDetectionAPI(VisionDataset):
             try:
                 if ".mp4" in path and path[-4:] == ".mp4":
                     # Going to load a video frame
+                    from decord import cpu, VideoReader  # aarch64 では未インストール
                     video_path, frame = path.split("@")
                     video = VideoReader(video_path, ctx=cpu(0))
                     # Convert to PIL image

@@ -87,12 +87,15 @@ Manage preset packs and regenerate blend-shape data from an FBX edited in Blende
 |---|---|
 | OS | Windows 11 / Linux (x86_64, aarch64) |
 | Python | 3.11 |
-| PyTorch | 2.10.0+cu128 |
-| CUDA | 12.8 |
-| GPU | NVIDIA GPU (≥ 4 GB VRAM recommended, 8 GB for comfort) |
-| Blender | 4.1+ (only required for FBX export) |
+| PyTorch | x86_64 / Windows: 2.10.0+cu128<br>aarch64 (e.g. GB10 / sm_121): 2.13.0.dev (nightly) + cu130 |
+| CUDA | x86_64 / Windows: 12.8<br>aarch64: 13.0 (official Blackwell Ultra sm_121 support) |
+| GPU | NVIDIA GPU (≥ 4 GB VRAM recommended, 8 GB for comfort)<br>DGX Spark (GB10 / sm_121) supported |
+| Blender | 4.1.1 — `setup.sh` / `setup.cmd` auto-downloads a portable build, so no separate install is required |
 
 The SAM 3D Body weights (~3.4 GB) stay resident on the GPU. CPU inference works but is considerably slower.
+
+> ℹ️ **Note on aarch64 (NVIDIA GB10 / DGX Spark)**
+> GB10 is compute capability 12.1 (sm_121). PyTorch 2.10 (cu128) only ships an NVRTC that targets up to sm_120, so aarch64 installs automatically resolve to a nightly cu130 wheel (with sm_121 support) — the split is declared in `pyproject.toml` via `platform_machine` markers. x86_64 and Windows stay on cu128 stable.
 
 ## 📦 Setup
 
@@ -107,6 +110,7 @@ setup.cmd
 - Creates `.venv` (Python 3.11) via [uv](https://docs.astral.sh/uv/)
 - Installs dependencies from `pyproject.toml` / `uv.lock` (cu128 wheels for torch/torchvision/torchaudio)
 - Installs redistributable CUDA wheels bundled under `wheels/`
+- Downloads the official portable **Blender 4.1.1** (`blender-4.1.1-windows-x64.zip`, ~400 MB) into `blender41-portable/` (skipped if already present)
 
 ### Linux (x86_64 / aarch64)
 
@@ -114,6 +118,15 @@ setup.cmd
 cd /path/to/SAM3DBody_utills
 ./setup.sh
 ```
+
+`setup.sh` performs the following automatically per architecture:
+
+| Architecture | torch / triton | Portable Blender |
+|---|---|---|
+| x86_64 | cu128 stable (via pypi) | Official `blender-4.1.1-linux-x64.tar.xz` auto-DL from `download.blender.org` → `blender41-portable/` |
+| aarch64 (ARM64) | nightly cu130 + matching triton wheel (platform-split via `pyproject.toml`) | Self-built portable auto-DL from this repo's [GitHub Release (`blender-arm64-v1.0`)](https://github.com/tori29umai0123/SAM3DBody_utills/releases/tag/blender-arm64-v1.0) with sha256 check → `ARM_blender41-portable/` |
+
+After extraction, `setup.sh` also injects `numpy` into Blender's bundled `site-packages/` (the self-built Blender does not ship it, which otherwise causes the FBX exporter to fail).
 
 ### Model weights
 
@@ -163,9 +176,6 @@ run.cmd
 [active]
 pack = default                    ; currently active preset pack
 
-[blender]
-exe = C:\Program Files\Blender Foundation\Blender 4.1\blender.exe
-
 [features]
 preset_pack_admin = false         ; true to show the preset pack admin tab
 debug = false                     ; true to show the Health panel
@@ -180,6 +190,17 @@ min_height_pixels = 0
 
 Settings are hot-reloaded per request — no server restart needed.
 
+### How the Blender executable is resolved
+
+`config.ini` does not carry a Blender path. `setup.sh` / `setup.cmd` drop a portable build next to the project, which the app resolves relatively in this order:
+
+1. `SAM3DBODY_BLENDER_EXE` environment variable (escape hatch for explicit overrides)
+2. Bundled portable Blender
+   - Windows: `blender41-portable/blender.exe`
+   - Linux x86_64: `blender41-portable/blender`
+   - Linux aarch64: `ARM_blender41-portable/bin/blender`
+3. `blender` / `blender.exe` on `PATH`
+
 ## 📂 Project layout
 
 ```
@@ -192,6 +213,8 @@ SAM3DBody_utills/
 ├── run.cmd / run.sh                ← starts uvicorn
 ├── setup.cmd / setup.sh            ← uv + dependency install
 ├── wheels/                         ← redistributable CUDA wheels
+├── blender41-portable/             ← setup-installed portable Blender (Win / Linux x86_64, auto-DL)
+├── ARM_blender41-portable/         ← setup-installed portable Blender (Linux aarch64, auto-DL)
 ├── models/                         ← SAM 3D Body / SAM3 weights (auto-DL)
 ├── presets/
 │   └── default/                    ← default preset pack (upstream-compatible)

@@ -292,6 +292,10 @@ def export_rigged_fbx(
             pass
 
     if not output_path.is_file():
+        # 終了コード 0 でも FBX が無い ≒ bpy.ops.export_scene.fbx 側の silent 失敗。
+        # トラブルシュート用に subprocess 出力を残す。
+        log.error("blender stdout:\n%s", result.stdout or "")
+        log.error("blender stderr:\n%s", result.stderr or "")
         raise RuntimeError(f"Blender reported success but {output_path} was not created.")
 
     fbx_url = f"/tmp/rigged.fbx?v={uuid.uuid4().hex[:8]}"

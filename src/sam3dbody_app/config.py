@@ -4,11 +4,13 @@
     [active]
     pack = default                 # current preset pack
 
-    [blender]
-    exe = C:\\Program Files\\Blender Foundation\\Blender 4.1\\blender.exe
-
     [features]
     preset_pack_admin = false      # gate Tab ③
+
+Blender の実行ファイルパスは config.ini では扱わない。``setup.sh`` /
+``setup.cmd`` がプロジェクト直下にポータブル版を配置するので、そこを基準に
+相対解決する (詳細は ``_bundled_blender_exe``)。明示的に差し替えたい場合は
+環境変数 ``SAM3DBODY_BLENDER_EXE`` を使う。
 
 Values can still be overridden at launch time via env vars (`SAM3DBODY_*`).
 Legacy installs that only have ``active_preset.ini`` are migrated on the
@@ -88,10 +90,6 @@ def _ensure_config_ini(paths: AppPaths) -> None:
         cp["active"] = {}
     cp["active"].setdefault("pack", "default")
 
-    if "blender" not in cp:
-        cp["blender"] = {}
-    cp["blender"].setdefault("exe", _auto_blender_exe())
-
     if "features" not in cp:
         cp["features"] = {}
     cp["features"].setdefault("preset_pack_admin", "false")
@@ -110,7 +108,6 @@ def _ensure_config_ini(paths: AppPaths) -> None:
             "# config.ini\n"
             "#\n"
             "# [active]    pack : currently-active preset pack name (directory under presets/)\n"
-            "# [blender]   exe  : path to Blender executable used for FBX export / extract\n"
             "# [features]  preset_pack_admin : 'true' to enable the Preset Pack Admin tab\n"
             "#                                   (pack switch / clone / delete, FBX rebuild).\n"
             "#                                   Default 'false' so a fresh install ships a\n"
@@ -125,16 +122,45 @@ def _ensure_config_ini(paths: AppPaths) -> None:
         cp.write(f)
 
 
-def _auto_blender_exe() -> str:
-    """Best-effort path for a local Blender install (used when seeding config.ini)."""
-    import shutil
+def _bundled_blender_exe() -> Path | None:
+    """プロジェクト直下に同梱されたポータブル Blender のパス (存在すれば) を返す。
+    setup.sh / setup.cmd が以下のレイアウトで配置する想定:
+      - Windows            : ``blender41-portable/blender.exe`` (公式 zip 平坦展開)
+      - Linux x86_64       : ``blender41-portable/blender``     (公式 tar.xz 平坦展開)
+      - Linux aarch64/ARM64: ``ARM_blender41-portable/bin/blender`` (自前ビルド、bin/ レイアウト)
+    """
+    import platform as _pf
     import sys as _sys
-    on_path = shutil.which("blender") or shutil.which("blender.exe")
-    if on_path:
-        return on_path
-    if _sys.platform == "win32":
-        return r"C:\Program Files\Blender Foundation\Blender 4.1\blender.exe"
-    return "blender"
+    root = _project_root()
+    candidates: list[Path] = []
+    if _sys.platform.startswith("linux"):
+        machine = _pf.machine().lower()
+        if machine in ("aarch64", "arm64"):
+            candidates.append(root / "ARM_blender41-portable" / "bin" / "blender")
+        else:
+            candidates.append(root / "blender41-portable" / "blender")
+    elif _sys.platform == "win32":
+        candidates.append(root / "blender41-portable" / "blender.exe")
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _resolve_blender_exe() -> str:
+    """Blender 実行ファイルを解決する。優先順:
+      1. 環境変数 ``SAM3DBODY_BLENDER_EXE`` (明示指定のエスケープハッチ)
+      2. プロジェクト直下の同梱ポータブル版 (``_bundled_blender_exe``)
+      3. PATH 上の ``blender`` / ``blender.exe``
+    どれも無ければ空文字を返し、呼び出し側で分かりやすいエラーを出させる。"""
+    import shutil
+    env = os.environ.get("SAM3DBODY_BLENDER_EXE")
+    if env:
+        return env
+    bundled = _bundled_blender_exe()
+    if bundled is not None:
+        return str(bundled)
+    return shutil.which("blender") or shutil.which("blender.exe") or ""
 
 
 @lru_cache(maxsize=1)
@@ -158,14 +184,6 @@ def get_paths() -> AppPaths:
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
-
-def _ini_blender_exe(paths: AppPaths) -> str:
-    cp = _read_config_ini(paths)
-    v = cp.get("blender", "exe", fallback="").strip()
-    if v:
-        return v
-    return _auto_blender_exe()
-
 
 def _ini_feature_flag(paths: AppPaths, key: str, default: bool = False) -> bool:
     cp = _read_config_ini(paths)
@@ -216,9 +234,8 @@ class AppSettings:
     @staticmethod
     def load() -> "AppSettings":
         paths = get_paths()
-        blender = os.environ.get("SAM3DBODY_BLENDER_EXE") or _ini_blender_exe(paths)
         return AppSettings(
-            blender_exe=blender,
+            blender_exe=_resolve_blender_exe(),
             host=os.environ.get("SAM3DBODY_HOST", "127.0.0.1"),
             port=int(os.environ.get("SAM3DBODY_PORT", "8765")),
             device=os.environ.get("SAM3DBODY_DEVICE", "cuda"),

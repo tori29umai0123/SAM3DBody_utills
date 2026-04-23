@@ -22,6 +22,10 @@ htmlcov/
 uv.lock
 # wheels/ は配布物なのでバージョン管理に含める
 
+# Bundled Blender (setup.sh が配置する。将来は自動DL予定)
+/ARM_blender41-portable/
+/blender41-portable/
+
 # User-specific runtime state (自動保存されるユーザー設定)
 /presets/*/chara_settings_presets/autosave.json
 

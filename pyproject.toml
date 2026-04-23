@@ -16,10 +16,17 @@ dependencies = [
     "opencv-python>=4.10",
     "safetensors>=0.7.0",
 
-    # Torch stack — cu128 wheels from download.pytorch.org (Win amd64 + Linux x86_64 + Linux aarch64)
-    "torch==2.10.0+cu128",
-    "torchvision==0.25.0+cu128",
-    "torchaudio==2.10.0+cu128",
+    # Torch stack
+    # - Win amd64 / Linux x86_64 / Linux aarch64 (非 Blackwell Ultra) : cu128 stable
+    # - Linux aarch64 (GB10 / sm_121 = Blackwell Ultra)              : cu130 nightly
+    #   cu128 stable の NVRTC は sm_120 までしかサポートせず、GB10 の JIT 実行時
+    #   コンパイルが "invalid value for --gpu-architecture (-arch)" で落ちるため。
+    "torch==2.10.0+cu128; platform_machine != 'aarch64'",
+    "torchvision==0.25.0+cu128; platform_machine != 'aarch64'",
+    "torchaudio==2.10.0+cu128; platform_machine != 'aarch64'",
+    "torch==2.13.0.dev20260422+cu130; platform_machine == 'aarch64'",
+    "torchvision==0.27.0.dev20260422+cu130; platform_machine == 'aarch64'",
+    "torchaudio==2.11.0.dev20260422+cu130; platform_machine == 'aarch64'",
     # xformers は意図的に外している: DINOv3 の LinearW24 の sparsify24 呼び出しだけが依存元で、
     # その関数は SAM3DBody の通常推論では起動しないため (実測で pipeline が xformers 無しで
     # warm 1.56s で完走、スコア不変)。約 350MB の install サイズを節約。復活させたい時は
@@ -44,6 +51,8 @@ dependencies = [
     # aarch64 で動画推論 (Phase 4) を走らせたい場合は手動で pyav/opencv にフォールバック予定。
     "decord>=0.6.0; sys_platform != 'linux' or platform_machine != 'aarch64'",
     "triton-windows; sys_platform == 'win32'",
+    # aarch64 は torch nightly (cu130) が pin する triton local version に従うため、
+    # ここでバージョン指定はせず [tool.uv.sources] で nightly index に寄せる。
     "triton; sys_platform != 'win32'",
 
     # SAM 3D Body + MHR
@@ -84,11 +93,31 @@ environments = [
 ]
 
 [tool.uv.sources]
-torch        = [{ index = "pytorch-cu128" }]
-torchvision  = [{ index = "pytorch-cu128" }]
-torchaudio   = [{ index = "pytorch-cu128" }]
+torch = [
+    { index = "pytorch-cu128",          marker = "platform_machine != 'aarch64'" },
+    { index = "pytorch-nightly-cu130",  marker = "platform_machine == 'aarch64'" },
+]
+torchvision = [
+    { index = "pytorch-cu128",          marker = "platform_machine != 'aarch64'" },
+    { index = "pytorch-nightly-cu130",  marker = "platform_machine == 'aarch64'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128",          marker = "platform_machine != 'aarch64'" },
+    { index = "pytorch-nightly-cu130",  marker = "platform_machine == 'aarch64'" },
+]
+# uv (v0.11) は PyTorch nightly index 上の local-version triton (triton==3.7.0+git*)
+# を index 経由で解決できないため、aarch64 だけ直接 URL で wheel を指定する。
+triton = [
+    { url = "https://download-r2.pytorch.org/whl/nightly/triton-3.7.0%2Bgitb4e20bbe-cp311-cp311-linux_aarch64.whl", marker = "platform_machine == 'aarch64' and python_version == '3.11'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu130"
+url = "https://download.pytorch.org/whl/nightly/cu130"
+explicit = true
+
