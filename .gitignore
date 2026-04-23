@@ -67,3 +67,6 @@ desktop.ini
 *.bak
 *.tmp
 *.orig
+
+# Feature WIP backups — local-only, not committed
+/_bvh_backup_wip/

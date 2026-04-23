@@ -9,20 +9,21 @@
 - 体型 (PCA 9 軸)・ボーン長・ブレンドシェイプ (約 20 種) をスライダーで自由に調整
 - プリセット pack によるブレンドシェイプ定義の切替・配布に対応
 
-## 🧬 派生元のプロジェクト
+## 🧬 構成要素とライセンス
 
-このリポジトリは以下の 2 つの既存プロジェクトの**組み合わせ・スタンドアロン化**として作られています。ComfyUI カスタムノード実装を外して単独の WebUI として動かせるようにしたものです。
+本プロジェクトは **multi-license 構成** です。wrapper 部分は MIT、
+vendor している SAM 3D Body / MHR / SAM3 はそれぞれ原著作者のライセンスに
+従います。
 
-| 派生元 | 役割 | ライセンス |
-|---|---|---|
-| **[tori29umai0123/ComfyUI-SAM3DBody_utills](https://github.com/tori29umai0123/ComfyUI-SAM3DBody_utills)** | ベース: SAM 3D Body + MHR のランタイム、blendshape/bone スケール/preset pack の全ロジック、Blender FBX 出力パイプライン (`tools/build_rigged_fbx.py` / `tools/build_animated_fbx.py`) | **GPL v3** |
-| ├ [PozzettiAndrea/ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) | さらにその元コード (オリジナルの ComfyUI カスタムノード) | MIT |
-| ├ [facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body) | SAM 3D Body 本体 (`src/sam3dbody_app/core/sam_3d_body/` に vendor 済み) | SAM License (Meta) |
-| └ MHR (Momentum Human Rig) | パラメトリック人体モデル (`mhr_model.pt` + topology) | Apache 2.0 (Meta) |
-| **[comfyui_sam3](https://github.com/wouterverweirder/comfyui-sam3)** (参照実装) | SAM3 (Meta Segment Anything 3) による人物マスク抽出ロジック。本プロジェクトでは `src/sam3dbody_app/core/sam3/` に vendor 済み | MIT (Copyright (c) 2025 Wouter Verweirder) |
-| └ [facebook/sam3](https://huggingface.co/facebook/sam3) | SAM3 モデル重み本体 | Meta ライセンス |
+| 区分 | 対象 | ライセンス | 著作権者 |
+|---|---|---|---|
+| **Wrapper code** (standalone WebUI 統合コード) | `src/sam3dbody_app/` (vendored 除く), `tools/`, `web/`, `setup.py`, `run.cmd`/`run.sh` など | **MIT License** | Copyright (c) 2025 Andrea Pozzetti ([PozzettiAndrea/ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) から継承) |
+| **SAM 3D Body** (本体) | `src/sam3dbody_app/core/sam_3d_body/` (vendored) | **SAM License** | Copyright (c) Meta Platforms, Inc. ([facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body)) |
+| **MHR (Momentum Human Rig)** | `mhr_model.pt` + MHR topology 派生データ (`presets/default/face_blendshapes.npz`, `presets/default/*_vertices.json`) | **Apache License 2.0** | Copyright (c) Meta Platforms, Inc. |
+| **SAM3** (person mask utility) | `src/sam3dbody_app/core/sam3/` (vendored) | **MIT License** | Copyright (c) 2025 Wouter Verweirder ([comfyui_sam3](https://github.com/wouterverweirder/comfyui-sam3)) |
+| **SAM3 モデル重み** | `models/sam3/sam3.pt` (自動 DL) | Meta ライセンス | [facebook/sam3](https://huggingface.co/facebook/sam3) |
 
-ライセンスの詳細と帰属表記は [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md) を参照してください。
+ライセンス全文と詳細な帰属表記は [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md) を参照してください。
 
 ## ✨ できること (タブごとの機能)
 
@@ -235,7 +236,7 @@ UI を再読み込みすれば設定はホットリロードされます (リク
 
 ```
 SAM3DBody_utills/
-├── LICENSE                         ← GPL v3 (上流から継承)
+├── LICENSE                         ← multi-license サマリ (MIT + SAM + Apache 2.0)
 ├── README.md                       ← このファイル (日本語)
 ├── README.en.md                    ← English version
 ├── config.ini
@@ -248,7 +249,7 @@ SAM3DBody_utills/
 ├── ARM_blender41-portable/         ← setup が配置するポータブル Blender (Linux aarch64, 自動 DL)
 ├── models/                         ← SAM 3D Body / SAM3 重み (自動 DL)
 ├── presets/
-│   └── default/                    ← 既定 preset pack (上流と互換)
+│   └── default/                    ← 既定 preset pack
 │       ├── face_blendshapes.npz
 │       ├── mhr_reference_vertices.json
 │       └── chara_settings_presets/
@@ -270,30 +271,37 @@ SAM3DBody_utills/
 └── docs/licenses/                  ← サブライセンス全文
 ```
 
-## 📝 ライセンス
+## 📝 License
 
-本プロジェクトは **GNU General Public License v3.0** で配布されます (上流 `tori29umai0123/ComfyUI-SAM3DBody_utills` から継承)。ルートの [`LICENSE`](LICENSE) を参照してください。
+本プロジェクトは **multi-license 構成** です (ルート [`LICENSE`](LICENSE) 参照)。
 
-内包するサードパーティのライセンス:
+| 区分 | ライセンス | 対象 |
+|---|---|---|
+| **Wrapper code** | **MIT License** (Copyright (c) 2025 Andrea Pozzetti) | standalone WebUI 統合コード全般 |
+| **SAM 3D Body** | **SAM License** (Meta) | `src/sam3dbody_app/core/sam_3d_body/` (vendored) |
+| **MHR (Momentum Human Rig)** | **Apache License 2.0** (Meta) | `mhr_model.pt` + topology 派生データ |
+| **SAM3 utility** | **MIT License** (Wouter Verweirder) | `src/sam3dbody_app/core/sam3/` (vendored) |
 
-- **ComfyUI-SAM3DBody_utills wrapper**: MIT (Andrea Pozzetti)
-- **SAM 3D Body** (`src/sam3dbody_app/core/sam_3d_body/`): SAM License (Meta)
-- **MHR (Momentum Human Rig)** (`mhr_model.pt` + topology + `face_blendshapes.npz`): Apache 2.0 (Meta)
-- **comfyui_sam3** (SAM3 マスク抽出ロジックの参考実装): MIT (Wouter Verweirder)
-- **SAM3** (重み): Meta ライセンス
+### Using this project
 
-帰属表記とライセンス全文は [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md) にまとまっています。再配布時は GPL v3 の条件に従い、**ソースコードと全ライセンスファイルを同梱**してください。
+- ✅ Wrapper 部分は MIT の条件のもと**自由に利用・改変・再配布**できます (商用可)
+- ✅ SAM 3D Body は SAM License のもとで研究・商用ともに利用可能です
+- ✅ MHR (およびそのトポロジから派生させたブレンドシェイプ / 領域データ) は Apache 2.0 のもとで商用利用できます
+- ⚠️ 再配布する場合は **LICENSE-MIT-SAM3DBody / LICENSE-SAM / LICENSE-MHR / NOTICE-MHR / LICENSE-MIT-comfyui_sam3** を同梱してください
+- ⚠️ 外注でブレンドシェイプを MHR トポロジ上にオーサリングした場合、その成果物は MHR の派生物 (Apache 2.0) となります
+- ⚠️ SAM 3D Body を用いた成果を論文等で公表する際は SAM License に従い明示的に謝辞を入れてください
+
+帰属表記とライセンス全文は [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md) にまとまっています。
 
 ## 🙏 Credits
 
 - **SAM 3D Body**: Meta AI / facebookresearch ([paper](https://ai.meta.com/research/publications/sam-3d-body-robust-full-body-human-mesh-recovery/))
 - **Momentum Human Rig (MHR)**: Meta Platforms, Inc.
 - **SAM3 (Segment Anything 3)**: Meta AI / <https://huggingface.co/facebook/sam3>
-- **ComfyUI-SAM3DBody_utills**: [@tori29umai0123](https://github.com/tori29umai0123)
-- **PozzettiAndrea/ComfyUI-SAM3DBody**: [@PozzettiAndrea](https://github.com/PozzettiAndrea)
+- **PozzettiAndrea/ComfyUI-SAM3DBody** (wrapper code の MIT 著作権元): [@PozzettiAndrea](https://github.com/PozzettiAndrea)
 - **comfyui_sam3**: [@wouterverweirder](https://github.com/wouterverweirder)
 
 ## 🗣 Community / Issues
 
 - 本プロジェクト (standalone WebUI) への issue / PR は本リポジトリへ
-- SAM 3D Body / MHR / ComfyUI 版の議論は上流 [PozzettiAndrea/ComfyUI-SAM3DBody の Discussions](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody/discussions) や [tori29umai0123/ComfyUI-SAM3DBody_utills の Issues](https://github.com/tori29umai0123/ComfyUI-SAM3DBody_utills/issues) が参考になります
+- SAM 3D Body / MHR 本体の議論は [PozzettiAndrea/ComfyUI-SAM3DBody の Discussions](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody/discussions) および [Comfy3D Discord](https://discord.gg/bcdQCUjnHE) が参考になります

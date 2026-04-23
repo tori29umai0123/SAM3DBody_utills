@@ -9,18 +9,19 @@ A **standalone FastAPI + Three.js web app** for turning a single image or video 
 - Full control over body shape (9-axis PCA), bone lengths, and ~20 blend shapes via sliders
 - Swappable **preset packs** for shipping custom blend-shape definitions
 
-## 🧬 Upstream projects
+## 🧬 Components & licenses
 
-This project is a **standalone repackaging** of two existing ComfyUI extensions. The ComfyUI wrapper has been removed and replaced by a standalone FastAPI server.
+This project uses a **multi-license layout**. The wrapper code is MIT,
+while vendored SAM 3D Body / MHR / SAM3 each follow their original
+upstream licenses.
 
-| Upstream | Role | License |
-|---|---|---|
-| **[tori29umai0123/ComfyUI-SAM3DBody_utills](https://github.com/tori29umai0123/ComfyUI-SAM3DBody_utills)** | Base — SAM 3D Body + MHR runtime, blendshape / bone-scale / preset-pack logic, Blender FBX pipeline (`tools/build_rigged_fbx.py`, `tools/build_animated_fbx.py`) | **GPL v3** |
-| ├ [PozzettiAndrea/ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) | Original ComfyUI custom node (upstream of the fork above) | MIT |
-| ├ [facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body) | SAM 3D Body model code (vendored under `src/sam3dbody_app/core/sam_3d_body/`) | SAM License (Meta) |
-| └ MHR (Momentum Human Rig) | Parametric body model (`mhr_model.pt` + mesh topology) | Apache 2.0 (Meta) |
-| **[comfyui_sam3](https://github.com/wouterverweirder/comfyui-sam3)** (reference implementation) | SAM3 (Meta Segment Anything 3) person-mask logic. Vendored under `src/sam3dbody_app/core/sam3/` | MIT (Copyright (c) 2025 Wouter Verweirder) |
-| └ [facebook/sam3](https://huggingface.co/facebook/sam3) | SAM3 model weights | Meta license |
+| Component | Scope | License | Copyright holder |
+|---|---|---|---|
+| **Wrapper code** (standalone WebUI integration) | `src/sam3dbody_app/` (excluding vendored sub-dirs), `tools/`, `web/`, `setup.py`, `run.cmd`/`run.sh` | **MIT License** | Copyright (c) 2025 Andrea Pozzetti (inherited from [PozzettiAndrea/ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody)) |
+| **SAM 3D Body** (core model) | `src/sam3dbody_app/core/sam_3d_body/` (vendored) | **SAM License** | Copyright (c) Meta Platforms, Inc. ([facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body)) |
+| **MHR (Momentum Human Rig)** | `mhr_model.pt` + MHR-topology derivative data (`presets/default/face_blendshapes.npz`, `presets/default/*_vertices.json`) | **Apache License 2.0** | Copyright (c) Meta Platforms, Inc. |
+| **SAM3** (person mask utility) | `src/sam3dbody_app/core/sam3/` (vendored) | **MIT License** | Copyright (c) 2025 Wouter Verweirder ([comfyui_sam3](https://github.com/wouterverweirder/comfyui-sam3)) |
+| **SAM3 model weights** | `models/sam3/sam3.pt` (auto-downloaded) | Meta license | [facebook/sam3](https://huggingface.co/facebook/sam3) |
 
 See [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md) for the full attribution chain and license texts.
 
@@ -235,7 +236,7 @@ Resolution order:
 
 ```
 SAM3DBody_utills/
-├── LICENSE                         ← GPL v3 (inherited from upstream)
+├── LICENSE                         ← multi-license summary (MIT + SAM + Apache 2.0)
 ├── README.md                       ← Japanese
 ├── README.en.md                    ← this file (English)
 ├── config.ini
@@ -248,7 +249,7 @@ SAM3DBody_utills/
 ├── ARM_blender41-portable/         ← setup-installed portable Blender (Linux aarch64, auto-DL)
 ├── models/                         ← SAM 3D Body / SAM3 weights (auto-DL)
 ├── presets/
-│   └── default/                    ← default preset pack (upstream-compatible)
+│   └── default/                    ← default preset pack
 │       ├── face_blendshapes.npz
 │       ├── mhr_reference_vertices.json
 │       └── chara_settings_presets/
@@ -272,28 +273,35 @@ SAM3DBody_utills/
 
 ## 📝 License
 
-This project is distributed under the **GNU General Public License v3.0**, inherited from the upstream `tori29umai0123/ComfyUI-SAM3DBody_utills`. See the root [`LICENSE`](LICENSE).
+This project uses a **multi-license layout** (see root [`LICENSE`](LICENSE)).
 
-Bundled third-party licenses:
+| Component | License | Scope |
+|---|---|---|
+| **Wrapper code** | **MIT License** (Copyright (c) 2025 Andrea Pozzetti) | standalone WebUI integration code |
+| **SAM 3D Body** | **SAM License** (Meta) | `src/sam3dbody_app/core/sam_3d_body/` (vendored) |
+| **MHR (Momentum Human Rig)** | **Apache License 2.0** (Meta) | `mhr_model.pt` + topology-derived data |
+| **SAM3 utility** | **MIT License** (Wouter Verweirder) | `src/sam3dbody_app/core/sam3/` (vendored) |
 
-- **ComfyUI-SAM3DBody_utills wrapper code**: MIT (Andrea Pozzetti)
-- **SAM 3D Body** (`src/sam3dbody_app/core/sam_3d_body/`): SAM License (Meta)
-- **MHR — Momentum Human Rig** (`mhr_model.pt` + topology + `face_blendshapes.npz`): Apache 2.0 (Meta)
-- **comfyui_sam3** (reference implementation of the SAM3 masking flow): MIT (Wouter Verweirder)
-- **SAM3** (weights): Meta license
+### Using this project
 
-All attribution and full license texts live in [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md). When redistributing, **include the source and all license files** per GPL v3 requirements.
+- ✅ The wrapper code is freely usable / modifiable / redistributable under MIT (commercial OK)
+- ✅ SAM 3D Body is usable for both research and commercial purposes under the SAM License
+- ✅ MHR and any data authored against its topology (blend-shape deltas, region JSONs) are commercially usable under Apache 2.0
+- ⚠️ When redistributing, include **LICENSE-MIT-SAM3DBody / LICENSE-SAM / LICENSE-MHR / NOTICE-MHR / LICENSE-MIT-comfyui_sam3**
+- ⚠️ Blend shapes authored on MHR topology by third parties become MHR derivative works (Apache 2.0) — keep the MHR attribution with any shipped deltas / meshes
+- ⚠️ When publishing work that uses SAM 3D Body (e.g. papers), acknowledge it per the SAM License
+
+All attribution and full license texts live in [`docs/licenses/THIRD_PARTY_NOTICES.md`](docs/licenses/THIRD_PARTY_NOTICES.md).
 
 ## 🙏 Credits
 
 - **SAM 3D Body**: Meta AI / facebookresearch ([paper](https://ai.meta.com/research/publications/sam-3d-body-robust-full-body-human-mesh-recovery/))
 - **Momentum Human Rig (MHR)**: Meta Platforms, Inc.
 - **SAM3 (Segment Anything 3)**: Meta AI / <https://huggingface.co/facebook/sam3>
-- **ComfyUI-SAM3DBody_utills**: [@tori29umai0123](https://github.com/tori29umai0123)
-- **PozzettiAndrea/ComfyUI-SAM3DBody**: [@PozzettiAndrea](https://github.com/PozzettiAndrea)
+- **PozzettiAndrea/ComfyUI-SAM3DBody** (wrapper code MIT copyright holder): [@PozzettiAndrea](https://github.com/PozzettiAndrea)
 - **comfyui_sam3**: [@wouterverweirder](https://github.com/wouterverweirder)
 
 ## 🗣 Community / Issues
 
 - Issues / PRs for the standalone WebUI itself go here in this repository.
-- For SAM 3D Body / MHR / ComfyUI-version discussion, see the upstream [PozzettiAndrea/ComfyUI-SAM3DBody Discussions](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody/discussions) and [tori29umai0123/ComfyUI-SAM3DBody_utills Issues](https://github.com/tori29umai0123/ComfyUI-SAM3DBody_utills/issues).
+- For SAM 3D Body / MHR discussion, see the upstream [PozzettiAndrea/ComfyUI-SAM3DBody Discussions](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody/discussions) and the [Comfy3D Discord](https://discord.gg/bcdQCUjnHE).
