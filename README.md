@@ -111,7 +111,7 @@ setup.cmd
 
 またはエクスプローラーで `setup.cmd` をダブルクリック。
 
-### Linux / macOS
+### Linux
 
 ```bash
 cd /path/to/SAM3DBody_utills
@@ -170,7 +170,7 @@ E:\SAM3DBody_utills\models\
 run.cmd
 ```
 
-### Linux / macOS
+### Linux
 
 ```bash
 ./run.sh

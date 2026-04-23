@@ -43,7 +43,6 @@ ARM_RELEASE_BASE = (
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
-IS_MAC = sys.platform == "darwin"
 MACHINE = platform.machine().lower()
 IS_ARM64 = MACHINE in ("aarch64", "arm64")
 
@@ -342,36 +341,7 @@ def auto_dl_linux_arm64() -> Path:
     archive.unlink(missing_ok=True)
     sha_file.unlink(missing_ok=True)
     log(f"Blender installed: {bin_blender}")
-
-    # Some ARM builds lack numpy in Blender's bundled Python; inject if needed.
-    _ensure_blender_numpy(
-        bin_blender,
-        target / "bin" / "4.1" / "python" / "lib" / "python3.11" / "site-packages",
-    )
     return bin_blender
-
-
-def _ensure_blender_numpy(blender_exe: Path, site_dir: Path) -> None:
-    if not blender_exe.is_file():
-        return
-    expr = f"import sys; sys.path.insert(0, {str(site_dir)!r}); import numpy"
-    probe = subprocess.run(
-        [str(blender_exe), "--background", "--python-expr", expr],
-        capture_output=True,
-    )
-    if probe.returncode == 0:
-        log(f"Blender numpy OK ({site_dir})")
-        return
-    log(f"installing numpy into {site_dir}")
-    site_dir.mkdir(parents=True, exist_ok=True)
-    venv_python = ROOT / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / (
-        "python.exe" if IS_WINDOWS else "python"
-    )
-    subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "--target", str(site_dir),
-         "--no-deps", "--upgrade", "numpy<2"],
-        check=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -418,11 +388,6 @@ def main() -> int:
         chosen: Path | None = None
     elif IS_WINDOWS or IS_LINUX:
         chosen = prompt_blender_path()
-    elif IS_MAC:
-        log("macOS detected. Blender auto-download is not supported; please install")
-        log("Blender manually and set config.ini [blender] exe_path by hand.")
-        log("Done. Run with ./run.sh once you configure Blender.")
-        return 0
     else:
         log(f"WARN: unsupported platform {sys.platform} / {MACHINE}; configure Blender manually.")
         return 0
@@ -441,7 +406,7 @@ def main() -> int:
             return 0
         write_blender_path(exe)
 
-    log("Done. Run with run.cmd (Windows) or run.sh (Linux/macOS).")
+    log("Done. Run with run.cmd (Windows) or run.sh (Linux).")
     return 0
 
 
