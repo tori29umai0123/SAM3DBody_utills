@@ -1,0 +1,60 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+.ipynb_checkpoints/
+
+# Project-specific
+/models/
+/tmp/
+uv.lock
+# wheels/ は配布物なのでバージョン管理に含める
+
+# User-specific runtime state (自動保存されるユーザー設定)
+/presets/*/chara_settings_presets/autosave.json
+
+# Claude Code local settings (ローカル権限・セッション設定)
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node
+/web/node_modules/
+/web/dist/
+
+# Logs
+*.log
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Backup / temp files
+*.bak
+*.tmp
+*.orig
