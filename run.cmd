@@ -31,6 +31,5 @@ if not "!FREE_PORT!"=="%SAM3DBODY_PORT%" (
 )
 set SAM3DBODY_PORT=!FREE_PORT!
 
-.venv\Scripts\python.exe tools\show_urls.py %SAM3DBODY_HOST% %SAM3DBODY_PORT%
-
+REM Access URL はアプリの lifespan preload 完了後に main.py が stdout へ出す。
 .venv\Scripts\python.exe -m uvicorn sam3dbody_app.main:app --host %SAM3DBODY_HOST% --port %SAM3DBODY_PORT% --reload --app-dir src
