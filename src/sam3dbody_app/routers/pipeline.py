@@ -8,7 +8,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from PIL import Image
 
 from ..config import AppSettings
-from ..services.pipeline import run_image_to_obj
+from ..services.pipeline import _normalize_input_image, run_image_to_obj
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["pipeline"])
@@ -31,6 +31,10 @@ async def process_image(
     try:
         pil = Image.open(io.BytesIO(raw))
         pil.load()
+        # Composite transparency over white and drop alpha so downstream
+        # SAM3 / SAM3DBody never sees RGBA / LA / palette-with-alpha modes
+        # (they crash on anything other than 3-channel RGB).
+        pil = _normalize_input_image(pil)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"could not decode image: {exc}") from exc
 

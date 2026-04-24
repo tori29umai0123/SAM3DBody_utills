@@ -189,12 +189,17 @@ BONE_ACTIONS: dict[str, tuple[str | None, str | None]] = {
 # ---------------------------------------------------------------------------
 
 
-def apply_humanoid_conversion(arm_obj, mesh_obj) -> dict[str, str]:
-    """Reshape ``arm_obj`` + ``mesh_obj`` in place into Humanoid layout.
+def apply_humanoid_conversion(arm_obj, mesh_obj=None) -> dict[str, str]:
+    """Reshape ``arm_obj`` (+ optionally ``mesh_obj``) in place into the
+    Humanoid layout.
 
     Must be called in OBJECT mode. Returns a ``{mhr_name: humanoid_name}``
     map of surviving (renamed) bones; callers pair this with the original
     MHR rest/posed rotation arrays to drive pose keyframes on the new rig.
+
+    If ``mesh_obj`` is None, vertex-group transfers / renames / removals are
+    skipped — useful for skeleton-only outputs that don't need LBS weights
+    baked into the output file.
     """
     print("[humanoid_convert] starting humanoid conversion")
 
@@ -228,7 +233,8 @@ def apply_humanoid_conversion(arm_obj, mesh_obj) -> dict[str, str]:
               f"(kept as-is): {sorted(unmapped)}")
 
     # 1. Transfer vertex-group weights (still Object mode)
-    _transfer_vertex_group_weights(mesh_obj, weight_merges)
+    if mesh_obj is not None:
+        _transfer_vertex_group_weights(mesh_obj, weight_merges)
 
     # 2. Reshape armature in Edit mode
     bpy.context.view_layer.objects.active = arm_obj
@@ -266,14 +272,15 @@ def apply_humanoid_conversion(arm_obj, mesh_obj) -> dict[str, str]:
         bpy.ops.object.mode_set(mode='OBJECT')
 
     # 3. Rename & prune vertex groups to match
-    for mhr_name, humanoid_name in rename_map.items():
-        vg = mesh_obj.vertex_groups.get(mhr_name)
-        if vg is not None:
-            vg.name = humanoid_name
-    for bname in to_delete:
-        vg = mesh_obj.vertex_groups.get(bname)
-        if vg is not None:
-            mesh_obj.vertex_groups.remove(vg)
+    if mesh_obj is not None:
+        for mhr_name, humanoid_name in rename_map.items():
+            vg = mesh_obj.vertex_groups.get(mhr_name)
+            if vg is not None:
+                vg.name = humanoid_name
+        for bname in to_delete:
+            vg = mesh_obj.vertex_groups.get(bname)
+            if vg is not None:
+                mesh_obj.vertex_groups.remove(vg)
 
     print(f"[humanoid_convert] renamed={len(rename_map)}  "
           f"merged+deleted={len(to_delete)}  "
@@ -319,7 +326,11 @@ def _transfer_vertex_group_weights(mesh_obj, merges):
 # ---------------------------------------------------------------------------
 
 
-def reorient_bones_along_chain(arm_obj, default_length: float = 0.05) -> None:
+def reorient_bones_along_chain(
+    arm_obj,
+    default_length: float = 0.05,
+    up_axis: str = 'Z',
+) -> None:
     """Re-set each bone's tail to point toward its best "chain child" in the
     CURRENT hierarchy. Call after ``apply_humanoid_conversion`` so that the
     upper/lower arms and other bones extend all the way to their real
@@ -330,7 +341,19 @@ def reorient_bones_along_chain(arm_obj, default_length: float = 0.05) -> None:
     with the parent→self axis. Leaves inherit the parent direction so tips
     (HeadTop_End, Toe_End, finger Thumb4 etc.) hang sensibly off their
     parent instead of snapping to a default axis.
+
+    ``up_axis`` controls two fallbacks that otherwise assume Blender's
+    default Z-up world:
+      * choosing the "spine-direction" child for a root-ish bone with a
+        degenerate parent→self axis
+      * the default length direction for a leaf bone with no parent
+    Pass ``'Y'`` when the armature is being built in Y-up native coords.
+    Default ``'Z'`` keeps the FBX builders' existing behaviour untouched.
     """
+    if up_axis not in ('Z', 'Y'):
+        raise ValueError(f"up_axis must be 'Z' or 'Y', got {up_axis!r}")
+    up_dir = Vector((0.0, 0.0, 1.0)) if up_axis == 'Z' else Vector((0.0, 1.0, 0.0))
+
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT')
     try:
@@ -343,15 +366,17 @@ def reorient_bones_along_chain(arm_obj, default_length: float = 0.05) -> None:
         for eb in edit_bones:
             head = eb.head.copy()
             kids = children_by_name.get(eb.name, [])
-            tail = _pick_tail_position(eb, head, kids, edit_bones, default_length)
+            tail = _pick_tail_position(
+                eb, head, kids, edit_bones, default_length, up_dir,
+            )
             if (tail - head).length < 1e-4:
-                tail = head + Vector((0.0, 0.0, default_length))
+                tail = head + up_dir * default_length
             eb.tail = tail
     finally:
         bpy.ops.object.mode_set(mode='OBJECT')
 
 
-def _pick_tail_position(eb, head, kids, edit_bones, default_length):
+def _pick_tail_position(eb, head, kids, edit_bones, default_length, up_dir):
     if kids:
         parent = eb.parent
         if parent is not None:
@@ -371,8 +396,10 @@ def _pick_tail_position(eb, head, kids, edit_bones, default_length):
                         best_s, best = s, kb
                 if best is not None:
                     return best.head.copy()
-        # Root or degenerate axis: pick highest-Z child (spine-ish choice).
-        best = max(kids, key=lambda k: edit_bones[k].head.z)
+        # Root or degenerate axis: pick the child farthest along ``up_dir``
+        # (spine-ish choice). Dot product against up_dir generalises the old
+        # `.head.z` to any Y-up / Z-up convention.
+        best = max(kids, key=lambda k: edit_bones[k].head.dot(up_dir))
         return edit_bones[best].head.copy()
 
     # Leaf: continue in parent→self direction.
@@ -381,7 +408,7 @@ def _pick_tail_position(eb, head, kids, edit_bones, default_length):
         pd = head - parent.head
         if pd.length > 1e-4:
             return head + pd.normalized() * default_length
-    return head + Vector((0.0, 0.0, default_length))
+    return head + up_dir * default_length
 
 
 def build_humanoid_to_dense(rename_map: dict[str, str],

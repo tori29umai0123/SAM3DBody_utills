@@ -53,17 +53,22 @@ details > div { padding: 6px 10px 2px; }
 .file-drop.dragover { border-color: #8ac; background: #1a2230; }
 .file-drop.compact { padding: 8px; margin-top: 6px; font-size: 11px; }
 
-/* Image preview: `hidden` attribute wins when no file is loaded yet —
-   `display: block` in the default ruleset would otherwise override the
-   browser's built-in `[hidden] { display: none }` and leave the broken-image
-   icon + the alt text visible. */
-#preview { max-width: 100%; max-height: 180px; margin-top: 6px; border: 1px solid #2a2a2a;
-  border-radius: 4px; }
-#preview:not([hidden]) { display: block; }
+/* Image preview lives inside the drop label so the "click to select"
+   text sits above it. Height is driven by the image itself (sidebar
+   scrolls if tall); width caps at the drop area so we don't push the
+   sidebar's fixed column wider. `hidden` attribute hides it entirely
+   until a file is picked so the broken-image icon never flashes. */
+#file-label { display: block; }
+#preview { display: block; max-width: 100%; margin: 8px auto 0;
+  border: 1px solid #2a2a2a; border-radius: 4px; }
 [hidden] { display: none !important; }
 
 #run-btn, #video-run-btn, #load-preset-btn, #reset-btn,
-#export-fbx-btn, #video-download-btn, #make-download-btn {
+#export-fbx-btn,
+#export-bvh-btn,
+#video-download-btn,
+#video-download-bvh-btn,
+#make-download-btn {
   padding: 6px 10px; background: #355; color: #cef; border: 1px solid #588;
   border-radius: 4px; cursor: pointer; font-size: 12px; }
 /* Prominent full-width primary buttons for the main actions in each tab. */
@@ -71,7 +76,10 @@ details > div { padding: 6px 10px 2px; }
   margin-top: 8px; width: 100%; padding: 8px 12px; font-size: 13px; }
 #run-btn:hover:not(:disabled), #video-run-btn:hover:not(:disabled),
 #load-preset-btn:hover:not(:disabled), #reset-btn:hover:not(:disabled),
-#export-fbx-btn:hover:not(:disabled), #video-download-btn:hover:not(:disabled),
+#export-fbx-btn:hover:not(:disabled),
+#export-bvh-btn:hover:not(:disabled),
+#video-download-btn:hover:not(:disabled),
+#video-download-bvh-btn:hover:not(:disabled),
 #make-download-btn:hover:not(:disabled) {
   background: #477; }
 button:disabled {
@@ -131,3 +139,15 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
 .viewport-btn:hover:not(:disabled) { background: rgba(52, 82, 100, 0.9); }
 .viewport-btn:disabled { background: rgba(34, 36, 42, 0.7); color: #667;
   border-color: #333; cursor: not-allowed; }
+
+/* Applied to <body> while the animated FBX rebuild is in flight — blocks
+   pointer events on sidebar / tab nav so users can't tweak sliders or
+   switch tabs while Blender is grinding. Viewport is left undimmed so the
+   "rebuilding" overlay stays readable. */
+body.ui-busy #sidebar,
+body.ui-busy .tab-nav,
+body.ui-busy .lang-picker { pointer-events: none; user-select: none; opacity: 0.55; }
+body.ui-busy { cursor: wait; }
+#viewport-overlay.busy { top: 50%; right: 50%; transform: translate(50%, -50%);
+  background: rgba(0, 0, 0, 0.8); font-size: 14px; padding: 12px 18px;
+  max-width: none; }

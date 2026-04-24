@@ -84,6 +84,10 @@ def _empty_settings() -> dict[str, Any]:
         "body_params": {k: 0.0 for k in cs.BODY_PARAM_KEYS},
         "bone_lengths": {k: 1.0 for k in cs.BONE_LENGTH_KEYS},
         "blendshapes": {},
+        "pose_adjust": {
+            k: float(cs.POSE_ADJUST_DEFAULTS.get(k, 0.0))
+            for k in cs.POSE_ADJUST_KEYS
+        },
     }
 
 
@@ -95,11 +99,18 @@ def _normalise_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     bp = settings.get("body_params") or {}
     bl = settings.get("bone_lengths") or {}
     bs = settings.get("blendshapes") or {}
+    pa = settings.get("pose_adjust") or {}
     for k in cs.BODY_PARAM_KEYS:
         base["body_params"][k] = float(bp.get(k, 0.0))
     for k in cs.BONE_LENGTH_KEYS:
         base["bone_lengths"][k] = float(bl.get(k, 1.0))
     base["blendshapes"] = {str(k): float(v) for k, v in bs.items()}
+    for k in cs.POSE_ADJUST_KEYS:
+        default_v = float(cs.POSE_ADJUST_DEFAULTS.get(k, 0.0))
+        try:
+            base["pose_adjust"][k] = float(pa.get(k, default_v))
+        except (TypeError, ValueError):
+            base["pose_adjust"][k] = default_v
     return base
 
 
@@ -151,6 +162,12 @@ def render_from_session(
             settings=s,
         )
 
+    # Pose adjust (lean correction) is applied AFTER mhr_forward by
+    # rotating the spine→neck chain; nothing to do to global_rot here.
+    if job_id == pose_session.MAKE_JOB_ID:
+        lean_strength = 0.0
+    else:
+        lean_strength = float(s["pose_adjust"].get("lean_correction", 0.0))
     global_rot = cs.to_tensor_1xN(sess.global_rot, device, width=3)
     body_pose = cs.to_tensor_1xN(sess.body_pose_params, device, width=133)
     hand_pose = cs.to_tensor_1xN(sess.hand_pose_params, device, width=108)
@@ -215,6 +232,14 @@ def render_from_session(
             arm_scale=bl["arm"], leg_scale=bl["leg"],
             torso_scale=bl["torso"], neck_scale=bl["neck"],
             joint_rots_posed=rots_np,
+        )
+
+    # Lean correction — straighten a forward-leaning upper body by
+    # rotating the spine→neck chain backward (applied last so it composes
+    # on top of bone-length / blendshape adjustments).
+    if coords_np is not None and lean_strength > 1e-6:
+        vertices = cs.apply_pose_lean_correction_mesh(
+            vertices, coords_np, lean_strength,
         )
 
     # mhr_forward already produces vertices in an OpenGL-convention world

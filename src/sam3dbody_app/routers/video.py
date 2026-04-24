@@ -16,6 +16,7 @@ from ..services.animated_fbx_export import (
     export_animated_fbx,
     run_motion_inference,
 )
+from ..services.bvh_export import export_animated_bvh_from_motion
 from ..services.video_frames import probe_video
 
 log = logging.getLogger(__name__)
@@ -189,6 +190,45 @@ async def build_animated_fbx(request: Request, payload: dict[str, Any]) -> dict[
         "elapsed_sec": round(result.elapsed_sec, 3),
         "num_frames": result.num_frames,
         "skipped_frames": result.skipped_frames,
+    }
+
+
+@router.post("/build_animated_bvh")
+async def build_animated_bvh(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the animated FBX for a cached motion, then convert it to BVH."""
+    motion_id = str(payload.get("motion_id") or "")
+    if not motion_id:
+        raise HTTPException(status_code=400, detail="motion_id is required")
+    settings = payload.get("settings") or {}
+    root_motion_mode = payload.get("root_motion_mode") or "auto_ground_lock"
+    strength = float(payload.get("strength", 1.0))
+
+    app_settings = AppSettings.load()
+    exe = payload.get("blender_exe") or app_settings.blender_exe
+
+    try:
+        result = export_animated_bvh_from_motion(
+            motion_id,
+            settings,
+            blender_exe=exe,
+            root_motion_mode=root_motion_mode,
+            strength=strength,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        log.exception("animated bvh build failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("animated bvh build failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "motion_id": result.motion_id,
+        "bvh_path": result.bvh_path,
+        "bvh_url": result.bvh_url,
+        "elapsed_sec": round(result.elapsed_sec, 3),
+        "num_frames": result.num_frames,
     }
 
 

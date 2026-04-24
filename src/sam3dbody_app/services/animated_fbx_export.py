@@ -36,7 +36,12 @@ import torch
 from ..config import get_paths
 from . import character_shape as cs
 from . import motion_session
-from .fbx_export import _KNOWN_JOINT_NAMES, _scale_skeleton_rest, _unpack_mhr_forward
+from .fbx_export import (
+    _KNOWN_JOINT_NAMES,
+    _scale_skeleton_rest,
+    _unpack_mhr_forward,
+    run_blender_build,
+)
 from .motion_session import MotionSession
 from .preset_pack import active_pack_paths
 from .sam3_mask import extract_best_person_mask
@@ -317,18 +322,21 @@ def run_motion_inference(
 # Phase 2: build animated FBX from a cached MotionSession + character settings
 # ---------------------------------------------------------------------------
 
-def build_animated_fbx_from_motion(
+def build_animated_package(
     motion_id: str,
     settings: dict[str, Any] | None,
+    output_path: Path,
     *,
-    blender_exe: str,
     root_motion_mode: str = "auto_ground_lock",
-    timeout_sec_base: int = 600,
-) -> AnimatedFBXResult:
-    """Rebuild an animated FBX for ``motion_id`` with the given character
-    ``settings``. The slow motion inference is NOT re-run — only MHR forward
-    (fast) + the Blender subprocess."""
-    t0 = time.monotonic()
+    lean_chain: tuple[tuple[int, float], ...] | None = None,
+) -> tuple[dict[str, Any], "MotionSession"]:
+    """Re-run MHR forward per frame for ``motion_id`` with the current
+    character ``settings`` and return the package dict (consumed by
+    ``tools/build_animated_fbx.py``) together with the cached
+    ``MotionSession`` so callers can surface its metadata.
+
+    Raises ``KeyError`` if the motion session isn't in the LRU cache.
+    """
     if root_motion_mode not in _ROOT_MOTION_MODES:
         root_motion_mode = "auto_ground_lock"
 
@@ -336,7 +344,6 @@ def build_animated_fbx_from_motion(
     if motion is None:
         raise KeyError(f"no motion session for id {motion_id!r}")
 
-    paths = get_paths()
     bundle = load_bundle()
     model = bundle.model
     device = torch.device(bundle.device)
@@ -353,6 +360,12 @@ def build_animated_fbx_from_motion(
     bp = s.get("body_params") or {}
     bl = s.get("bone_lengths") or {}
     bs = s.get("blendshapes") or {}
+    pa = s.get("pose_adjust") or {}
+    _lean_default = float(cs.POSE_ADJUST_DEFAULTS.get("lean_correction", 0.0))
+    try:
+        lean_strength = float(pa.get("lean_correction", _lean_default))
+    except (TypeError, ValueError):
+        lean_strength = _lean_default
 
     shape_params = cs.build_shape_params(bp, mhr_head.num_shape_comps, device)
     scale_params = torch.zeros((1, mhr_head.num_scale_comps), dtype=torch.float32, device=device)
@@ -406,8 +419,10 @@ def build_animated_fbx_from_motion(
 
     # ===== Per-frame MHR forward (fast; no SAM3) =====
     frames_posed_rots: list[np.ndarray] = []
+    frames_posed_coords: list[np.ndarray] = []
     frames_feet_pos: list[np.ndarray] = []
     last_good_pose = None
+    last_good_coords = char_rest_coords.copy()
     last_good_feet_pos = np.stack([
         char_rest_coords[_FOOT_JOINT_L], char_rest_coords[_FOOT_JOINT_R],
     ], axis=0)
@@ -423,6 +438,7 @@ def build_animated_fbx_from_motion(
             else:
                 posed_rots = last_good_pose
             frames_posed_rots.append(posed_rots)
+            frames_posed_coords.append(last_good_coords.copy())
             frames_feet_pos.append(last_good_feet_pos.copy())
             continue
 
@@ -439,15 +455,25 @@ def build_animated_fbx_from_motion(
             )
         posed_rots, posed_coords = _unpack_mhr_forward(posed_out[1:])
         posed_rots = posed_rots.astype(np.float32)
+        pc = np.asarray(posed_coords, dtype=np.float32) if posed_coords is not None else None
+        # Apply spine→neck chain lean correction to the posed rig, so every
+        # animation frame carries the straightened upper body.
+        if lean_strength > 1e-6 and pc is not None:
+            posed_rots, pc = cs.apply_pose_lean_correction_rig(
+                posed_rots, pc, parents, lean_strength,
+                chain=lean_chain,
+            )
         last_good_pose = posed_rots
         frames_posed_rots.append(posed_rots)
 
-        if posed_coords is not None:
-            pc = np.asarray(posed_coords, dtype=np.float32)
+        if pc is not None:
+            last_good_coords = pc
             feet_pos = np.stack([pc[_FOOT_JOINT_L], pc[_FOOT_JOINT_R]], axis=0)
             last_good_feet_pos = feet_pos
         else:
+            pc = last_good_coords
             feet_pos = last_good_feet_pos.copy()
+        frames_posed_coords.append(pc.copy())
         frames_feet_pos.append(feet_pos)
 
     # ===== Prune weightless leaves (same policy as rigged FBX) =====
@@ -475,6 +501,7 @@ def build_animated_fbx_from_motion(
     rest_coords_out = char_rest_coords[kept_idx]
     rest_rots_out = char_rest_rots[kept_idx]
     frames_posed_rots_out = [pr[kept_idx].tolist() for pr in frames_posed_rots]
+    frames_posed_coords_out = [pc[kept_idx].tolist() for pc in frames_posed_coords]
 
     j_idx_new = j_remap[j_idx]
     valid = j_idx_new >= 0
@@ -503,15 +530,11 @@ def build_animated_fbx_from_motion(
         frames_root_trans = trans_arr.tolist()
 
     log.info(
-        "animated FBX build: motion_id=%s %d frames (cam_t on %d, skipped %d), %d / %d joints kept",
+        "animated package: motion_id=%s %d frames (cam_t on %d, skipped %d), "
+        "%d / %d joints kept, lean_correction=%.3f",
         motion.motion_id, motion.num_frames, detected_trans, motion.skipped_frames,
-        len(kept_idx), num_joints,
+        len(kept_idx), num_joints, lean_strength,
     )
-
-    # ===== Package + Blender subprocess =====
-    # Single overwriting file — callers that want a distinct filename on
-    # disk should copy it after download. The frontend cache-busts with ?v=.
-    output_path = (paths.tmp_dir / "animated.fbx").resolve()
 
     package = {
         "output_path": str(output_path),
@@ -523,47 +546,40 @@ def build_animated_fbx_from_motion(
         "rest_joint_coords": rest_coords_out.tolist(),
         "rest_joint_rots": rest_rots_out.tolist(),
         "frames_posed_joint_rots": frames_posed_rots_out,
+        "frames_posed_joint_coords": frames_posed_coords_out,
         "frames_root_trans": frames_root_trans,
         "lbs_v_idx": v_idx.astype(np.int32).tolist(),
         "lbs_j_idx": j_idx_new.astype(np.int32).tolist(),
         "lbs_weight": w_val.tolist(),
     }
+    return package, motion
+
+
+def build_animated_fbx_from_motion(
+    motion_id: str,
+    settings: dict[str, Any] | None,
+    *,
+    blender_exe: str,
+    root_motion_mode: str = "auto_ground_lock",
+    timeout_sec_base: int = 600,
+) -> AnimatedFBXResult:
+    """Rebuild an animated FBX for ``motion_id`` with the given character
+    ``settings``. The slow motion inference is NOT re-run — only MHR forward
+    (fast) + the Blender subprocess."""
+    t0 = time.monotonic()
+    paths = get_paths()
+    output_path = (paths.tmp_dir / "animated.fbx").resolve()
+    package, motion = build_animated_package(
+        motion_id, settings, output_path, root_motion_mode=root_motion_mode,
+    )
 
     build_script = (paths.root / "tools" / "build_animated_fbx.py").resolve()
-    if not build_script.is_file():
-        raise RuntimeError(f"Blender build script missing: {build_script}")
-    if not blender_exe or not Path(blender_exe).exists():
-        raise RuntimeError(
-            f"Blender executable not found: {blender_exe!r}. "
-            "Set SAM3DBODY_BLENDER_EXE or pass blender_exe."
-        )
-
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
-        json.dump(package, tmp)
-        tmp_json = tmp.name
-
-    cmd = [blender_exe, "--background", "--python", str(build_script), "--", "--input", tmp_json]
     timeout_s = max(timeout_sec_base, 30 + 2 * motion.num_frames)
-    log.info("blender subprocess: %s (timeout %ds)",
-             " ".join(shlex.quote(c) for c in cmd), timeout_s)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-        if result.returncode != 0:
-            log.error("blender stdout:\n%s", result.stdout or "")
-            log.error("blender stderr:\n%s", result.stderr or "")
-            raise RuntimeError(
-                f"Blender animated FBX export failed (exit {result.returncode})."
-            )
-        if result.stdout:
-            log.info("blender stdout tail:\n%s", result.stdout[-1200:])
-    finally:
-        try:
-            os.unlink(tmp_json)
-        except OSError:
-            pass
-
-    if not output_path.is_file():
-        raise RuntimeError(f"Blender reported success but {output_path} was not created.")
+    run_blender_build(
+        package, build_script,
+        blender_exe=blender_exe, output_path=output_path,
+        timeout_sec=timeout_s, log_tag="animated_fbx",
+    )
 
     fbx_url = f"/tmp/animated.fbx?v={uuid.uuid4().hex[:8]}"
     elapsed = time.monotonic() - t0

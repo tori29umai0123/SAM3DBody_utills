@@ -20,7 +20,9 @@ const presetSelect = $("preset-select");
 const loadPresetBtn = $("load-preset-btn");
 const resetBtn = $("reset-btn");
 const exportFbxBtn = $("export-fbx-btn");
+const exportBvhBtn = $("export-bvh-btn");
 const fbxInfo = $("fbx-info");
+const bvhInfo = $("bvh-info");
 const renderInfo = $("render-info");
 const charJsonInput = $("char-json-input");
 const charJsonDrop = $("char-json-drop");
@@ -129,8 +131,18 @@ let schema = null;
 // (render calls, slider handlers) work unchanged. The Character panel
 // (preset dropdown + JSON upload) itself is shared DOM across tabs — we
 // just swap the values it displays when the tab changes.
+// ``lean_correction`` starts at 0.5 (the calibrated "いい感じ" value) so a
+// fresh tab already straightens a forward-leaning subject without the user
+// having to touch the slider.
+const LEAN_CORRECTION_DEFAULT = 0.0;
+
 function _freshSettings() {
-  return { body_params: {}, bone_lengths: {}, blendshapes: {} };
+  return {
+    body_params: {},
+    bone_lengths: {},
+    blendshapes: {},
+    pose_adjust: { lean_correction: LEAN_CORRECTION_DEFAULT },
+  };
 }
 function _freshCharState() {
   return { preset: "", sourceText: "", jsonLabel: null };
@@ -402,6 +414,16 @@ function initViewer() {
     };
   }
 
+  // Remove whatever mesh / animation is currently shown and leave the
+  // viewport empty. The video tab uses this while a Blender rebuild is in
+  // flight so the stale character doesn't keep playing on top of a
+  // "rebuilding" status label.
+  function clearMesh() {
+    _disposeMesh();
+    meshGroup = null;
+    _dirty = true;
+  }
+
   function savePng(filename) {
     // Swap to a white background and hide the ground grid for the capture,
     // then restore both so the on-screen view isn't disturbed. Using
@@ -429,7 +451,7 @@ function initViewer() {
     }
   }
 
-  return { loadObj, loadFbxAnimated, savePng, switchTab, hasCachedMesh };
+  return { loadObj, loadFbxAnimated, savePng, switchTab, hasCachedMesh, clearMesh };
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +580,71 @@ function refreshSlidersFromSettings() {
       ref.range.value = String(v);
       ref.num.value = String(v);
     }
+  }
+  if (!settings.pose_adjust) {
+    settings.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+  } else if (settings.pose_adjust.lean_correction === undefined) {
+    settings.pose_adjust.lean_correction = LEAN_CORRECTION_DEFAULT;
+  }
+}
+
+// The lean-correction slider lives inside each tab's own panel (image /
+// video), so we wire them up once at boot and keep them in sync with
+// ``tabSettings[tab].pose_adjust.lean_correction``. Unlike the body /
+// bone / blendshape sliders (shared DOM in the Character panel), these
+// are tab-scoped, so no tab-switch sync is needed.
+//
+// Image tab re-renders on ``input`` (cheap OBJ mesh swap), video tab only
+// fires a rebuild on ``change`` (mouseup / Enter) because each animated
+// FBX rebuild spawns a Blender subprocess that takes 10-30 s — dragging
+// the knob would otherwise queue a stale rebuild per pointer move.
+function initLeanSliders() {
+  const cfgs = [
+    { tab: "image", rangeId: "img-lean-range",   numId: "img-lean-num",
+      liveRebuild: true  },
+    { tab: "video", rangeId: "video-lean-range", numId: "video-lean-num",
+      liveRebuild: false },
+  ];
+  for (const c of cfgs) {
+    const range = document.getElementById(c.rangeId);
+    const num = document.getElementById(c.numId);
+    if (!range || !num) continue;
+    const slot = tabSettings[c.tab];
+    if (!slot.pose_adjust) {
+      slot.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+    }
+    const cur = Number(
+      slot.pose_adjust.lean_correction ?? LEAN_CORRECTION_DEFAULT,
+    );
+    range.value = String(cur);
+    num.value = String(cur);
+
+    const writeValue = (v) => {
+      let n = Number(v);
+      if (!Number.isFinite(n)) n = 0;
+      const clamped = Math.max(0, Math.min(1, n));
+      range.value = String(clamped);
+      num.value = String(clamped);
+      slot.pose_adjust.lean_correction = clamped;
+      return clamped;
+    };
+    const maybeFire = () => {
+      const activeTab = document.querySelector(".tab-nav button.active")?.dataset.tab;
+      if (activeTab === c.tab) scheduleRender();
+    };
+
+    range.addEventListener("input", () => {
+      writeValue(range.value);
+      if (c.liveRebuild) maybeFire();
+    });
+    range.addEventListener("change", () => {
+      writeValue(range.value);
+      if (!c.liveRebuild) maybeFire();
+    });
+    num.addEventListener("change", () => {
+      writeValue(num.value);
+      maybeFire();
+    });
   }
 }
 
@@ -791,6 +878,35 @@ exportFbxBtn.addEventListener("click", async () => {
   }
 });
 
+exportBvhBtn?.addEventListener("click", async () => {
+  if (!currentJobId) {
+    if (bvhInfo) bvhInfo.textContent = "Run pose estimation first";
+    return;
+  }
+  exportBvhBtn.disabled = true;
+  if (bvhInfo) bvhInfo.textContent = "Blender subprocess running... (converting to BVH)";
+  try {
+    const t0 = performance.now();
+    const r = await fetch("/api/export_bvh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ job_id: currentJobId, settings, strength: 1.0 }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    const j = await r.json();
+    const ms = Math.round(performance.now() - t0);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const savedAs = `sam3d_rigged_${stamp}.bvh`;
+    triggerDownload(j.bvh_url, savedAs);
+    if (bvhInfo) bvhInfo.textContent = `BVH ${j.elapsed_sec}s (wall ${ms}ms) - saved as ${savedAs}`;
+  } catch (e) {
+    console.error(e);
+    if (bvhInfo) bvhInfo.textContent = `BVH export error: ${e.message || e}`;
+  } finally {
+    exportBvhBtn.disabled = false;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Inference lock — aborts the in-flight fetch and freezes tab navigation so
 // the user can't switch contexts mid-run. Client-side abort drops the
@@ -827,6 +943,15 @@ function cancelInference() {
   if (currentAbortController) currentAbortController.abort();
 }
 
+function triggerDownload(url, filename) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 runCancelBtn.addEventListener("click", cancelInference);
 
 // ---------------------------------------------------------------------------
@@ -854,6 +979,7 @@ runBtn.addEventListener("click", async () => {
     // Inference landed — unlock the image-tab FBX download and re-render
     // the now-posed body with whatever character the user was viewing.
     exportFbxBtn.hidden = false;
+    exportBvhBtn.hidden = false;
     scheduleRender();
 
     statusEl.textContent = `done — ${j.elapsed_sec}s`;
@@ -1038,7 +1164,9 @@ const videoRunBtn = $("video-run-btn");
 const videoCancelBtn = $("video-cancel-btn");
 const videoRunInfo = $("video-run-info");
 const videoDownloadBtn = $("video-download-btn");
+const videoDownloadBvhBtn = $("video-download-bvh-btn");
 const videoDownloadInfo = $("video-download-info");
+const videoDownloadBvhInfo = $("video-download-bvh-info");
 let selectedVideo = null;
 // Motion cache id returned by /api/infer_motion. While set, character
 // tweaks re-run /api/build_animated_fbx instead of the pose/image pipeline.
@@ -1096,6 +1224,7 @@ videoRunBtn.addEventListener("click", async () => {
   videoRunBtn.disabled = true;
   // Button is shown again only when rebuildAnimatedFbx finishes successfully.
   videoDownloadBtn.hidden = true;
+  videoDownloadBvhBtn.hidden = true;
   videoRunInfo.textContent = "Running motion inference (minutes for long clips)…";
   const signal = beginInference(videoCancelBtn);
   const form = new FormData();
@@ -1139,18 +1268,29 @@ async function rebuildAnimatedFbx(signal = null) {
   videoRebuildInFlight = true;
   videoRebuildDirty = false;
   const label0 = videoRunInfo.textContent;
+  // Visible feedback so slider drags on video don't look like a no-op while
+  // the Blender subprocess grinds (~10-30s per rebuild).
+  videoRunInfo.textContent =
+    window.i18n?.t("video.rebuilding") || "rebuilding FBX…";
+  // Clear the viewport so the stale character doesn't keep animating on top
+  // of the "rebuilding" status. Re-populated when the new FBX lands.
+  viewer.clearMesh();
+  _setVideoBusy(true);
   try {
     const t0 = performance.now();
+    const payload = {
+      motion_id: currentMotionId,
+      // Always bake the VIDEO tab's cached character — not whichever tab
+      // happens to be active when the recursion in `finally` fires.
+      settings: tabSettings.video,
+      root_motion_mode: $("video-root-mode").value,
+    };
+    console.debug("rebuildAnimatedFbx →",
+      "lean=", tabSettings.video?.pose_adjust?.lean_correction);
     const r = await fetch("/api/build_animated_fbx", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        motion_id: currentMotionId,
-        // Always bake the VIDEO tab's cached character — not whichever tab
-        // happens to be active when the recursion in `finally` fires.
-        settings: tabSettings.video,
-        root_motion_mode: $("video-root-mode").value,
-      }),
+      body: JSON.stringify(payload),
       signal,
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
@@ -1162,6 +1302,7 @@ async function rebuildAnimatedFbx(signal = null) {
     if (videoRebuildDirty) return;
     currentAnimatedFbxUrl = j.fbx_url;
     videoDownloadBtn.hidden = false;
+    videoDownloadBvhBtn.hidden = false;
     const ms = Math.round(performance.now() - t0);
     const name = j.fbx_url.split("/").pop();
     videoRunInfo.innerHTML =
@@ -1184,7 +1325,25 @@ async function rebuildAnimatedFbx(signal = null) {
     videoRunInfo.textContent = `FBX build error: ${e.message || e}`;
   } finally {
     videoRebuildInFlight = false;
-    if (videoRebuildDirty) rebuildAnimatedFbx();
+    if (videoRebuildDirty) {
+      // Still busy — next rebuild takes over without unlocking the UI.
+      rebuildAnimatedFbx();
+    } else {
+      _setVideoBusy(false);
+    }
+  }
+}
+
+// Lock / unlock sidebar + tab nav while a Blender FBX rebuild is running,
+// and show a centred "rebuilding…" overlay so the user can't miss it.
+function _setVideoBusy(busy) {
+  document.body.classList.toggle("ui-busy", busy);
+  if (busy) {
+    overlay.textContent = window.i18n?.t("video.rebuilding") || "rebuilding FBX…";
+    overlay.classList.add("busy");
+  } else {
+    overlay.textContent = "";
+    overlay.classList.remove("busy");
   }
 }
 
@@ -1195,13 +1354,46 @@ videoDownloadBtn.addEventListener("click", () => {
   if (!currentAnimatedFbxUrl) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const savedAs = `sam3d_animated_${stamp}.fbx`;
-  const a = document.createElement("a");
-  a.href = currentAnimatedFbxUrl;
-  a.download = savedAs;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  triggerDownload(currentAnimatedFbxUrl, savedAs);
   if (videoDownloadInfo) videoDownloadInfo.textContent = `saved as ${savedAs}`;
+});
+
+videoDownloadBvhBtn?.addEventListener("click", async () => {
+  if (!currentMotionId) return;
+  videoDownloadBvhBtn.disabled = true;
+  if (videoDownloadBvhInfo) {
+    videoDownloadBvhInfo.textContent = "Blender subprocess running... (converting to BVH)";
+  }
+  try {
+    const t0 = performance.now();
+    const r = await fetch("/api/build_animated_bvh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        motion_id: currentMotionId,
+        settings: tabSettings.video,
+        root_motion_mode: $("video-root-mode").value,
+        strength: 1.0,
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    const j = await r.json();
+    const ms = Math.round(performance.now() - t0);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const savedAs = `sam3d_animated_${stamp}.bvh`;
+    triggerDownload(j.bvh_url, savedAs);
+    if (videoDownloadBvhInfo) {
+      videoDownloadBvhInfo.textContent =
+        `BVH ${j.elapsed_sec}s (wall ${ms}ms) - saved as ${savedAs}`;
+    }
+  } catch (e) {
+    console.error(e);
+    if (videoDownloadBvhInfo) {
+      videoDownloadBvhInfo.textContent = `BVH export error: ${e.message || e}`;
+    }
+  } finally {
+    videoDownloadBvhBtn.disabled = false;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1270,6 +1462,7 @@ async function boot() {
     buildSliders(boneLengthsEl, "bone_lengths", schema.bone_lengths);
     buildSliders(blendshapesEl, "blendshapes", schema.blendshapes);
   } catch (e) { console.error("slider schema load failed:", e); }
+  initLeanSliders();
   await refreshPresets();
   await refreshPackList();
   await refreshFbxStatus();

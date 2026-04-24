@@ -45,11 +45,20 @@
         <label class="file-drop" id="file-drop">
           <input type="file" id="file-input" accept="image/*" />
           <span id="file-label" data-i18n="input.drop">クリックして画像を選択 / ドロップ</span>
+          <img id="preview" alt="preview" hidden />
         </label>
-        <img id="preview" alt="preview" hidden />
         <button id="run-btn" disabled data-i18n="input.run">ポーズを推定</button>
         <button id="run-cancel-btn" class="cancel-btn" hidden data-i18n="input.cancel">推定を中止</button>
         <div id="run-info" class="muted"></div>
+      </section>
+      <section>
+        <h2 data-i18n="section.pose_adjust">Pose Adjust</h2>
+        <label class="param-row" title="ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。">
+          <span data-i18n="pose.lean_correction">前かがみ補正</span>
+          <input type="range" id="img-lean-range" min="0" max="1" step="0.01" value="0" />
+          <input type="number" id="img-lean-num" min="0" max="1" step="0.01" value="0" />
+        </label>
+        <p class="muted" data-i18n="pose.lean_correction_hint">ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。</p>
       </section>
     </div>
 
@@ -76,6 +85,13 @@
           <label class="param-row"><span data-i18n="video.stride">stride</span><input type="number" id="video-stride" min="1" step="1" value="1" title="keep every Nth frame" /></label>
           <label class="param-row"><span data-i18n="video.max_frames">max frames (0 = all)</span><input type="number" id="video-max-frames" min="0" step="1" value="0" /></label>
         </details>
+        <h2 style="margin-top:14px" data-i18n="section.pose_adjust">Pose Adjust</h2>
+        <label class="param-row" title="ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。">
+          <span data-i18n="pose.lean_correction">前かがみ補正</span>
+          <input type="range" id="video-lean-range" min="0" max="1" step="0.01" value="0" />
+          <input type="number" id="video-lean-num" min="0" max="1" step="0.01" value="0" />
+        </label>
+        <p class="muted" data-i18n="pose.lean_correction_hint">ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。</p>
         <button id="video-run-btn" disabled data-i18n="video.run">モーションを推定</button>
         <button id="video-cancel-btn" class="cancel-btn" hidden data-i18n="video.cancel">推定を中止</button>
         <div id="video-run-info" class="muted"></div>
@@ -179,7 +195,11 @@
         <div class="row">
           <button id="export-fbx-btn" hidden data-i18n="character.export_fbx" data-i18n-title="tooltip.export_fbx">FBX をダウンロード</button>
         </div>
+        <div class="row">
+          <button id="export-bvh-btn" hidden data-i18n="character.export_bvh" data-i18n-title="tooltip.export_bvh">BVH をダウンロード</button>
+        </div>
         <div id="fbx-info" class="muted"></div>
+        <div id="bvh-info" class="muted"></div>
       </div>
 
       <!-- Video tab only: download the currently-playing animated FBX. Lives
@@ -189,7 +209,11 @@
         <div class="row">
           <button id="video-download-btn" hidden data-i18n="video.download" data-i18n-title="tooltip.video_download">FBX をダウンロード</button>
         </div>
+        <div class="row">
+          <button id="video-download-bvh-btn" hidden data-i18n="video.download_bvh" data-i18n-title="tooltip.video_download_bvh">BVH をダウンロード</button>
+        </div>
         <div id="video-download-info" class="muted"></div>
+        <div id="video-download-bvh-info" class="muted"></div>
       </div>
     </section>
 

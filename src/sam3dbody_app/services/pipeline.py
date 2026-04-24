@@ -35,10 +35,30 @@ class PipelineResult:
     pose_json: dict[str, Any] = field(default_factory=dict)
 
 
+def _normalize_input_image(img: Image.Image) -> Image.Image:
+    """Return a plain RGB image safe for SAM3/SAM3DBody.
+
+    Transparent PNGs often arrive as RGBA/LA or palette images with a
+    transparency table. Passing those modes through PIL/NumPy is fine for our
+    RGB conversion, but downstream model code expects a 3-channel image
+    consistently. Composite transparency over white, then drop alpha.
+    """
+    if img.mode == "RGB":
+        return img
+
+    has_alpha = (
+        img.mode in ("RGBA", "LA")
+        or (img.mode == "P" and "transparency" in img.info)
+    )
+    if has_alpha:
+        rgba = img.convert("RGBA")
+        bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        return Image.alpha_composite(bg, rgba).convert("RGB")
+    return img.convert("RGB")
+
+
 def _to_rgb_uint8(img: Image.Image) -> np.ndarray:
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    return np.asarray(img)
+    return np.asarray(_normalize_input_image(img))
 
 
 def _numpy_clean(obj: Any) -> Any:
@@ -85,6 +105,7 @@ def run_image_to_obj(
     paths = get_paths()
     bundle = load_bundle(device_mode)
 
+    pil_image = _normalize_input_image(pil_image)
     rgb = _to_rgb_uint8(pil_image)
     h, w = rgb.shape[:2]
 

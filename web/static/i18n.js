@@ -23,6 +23,10 @@ const DICT = {
     "section.fbx_rebuild": "FBX Rebuild",
     "section.character": "Character",
     "section.health": "Health",
+    "section.pose_adjust": "Pose 補正",
+
+    "pose.lean_correction": "前かがみ補正",
+    "pose.lean_correction_hint": "ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。",
 
     "make.hint": "MHR 既定の T-pose 素体に対して、下の Character スライダーで体形を調整できます。完成したら「json をダウンロード」で JSON をローカル保存してください。",
     "make.download": "json をダウンロード",
@@ -54,6 +58,7 @@ const DICT = {
     "video.cancelled": "キャンセルしました",
     "video.done": "推定終了",
     "video.download": "FBX をダウンロード",
+    "video.download_bvh": "BVH をダウンロード",
     "video.rebuilding": "キャラクター差し替え中…",
     "video.hint": "※ 体形は下の Character パネル (preset / JSON) で指定した値を rig にベイクします。モーション推定後に preset を切り替えると、キャラを差し替えた FBX が自動再生されます。",
 
@@ -61,6 +66,7 @@ const DICT = {
     "character.load": "Load",
     "character.reset": "Reset",
     "character.export_fbx": "FBX をダウンロード",
+    "character.export_bvh": "BVH をダウンロード",
     "character.body_summary": "Body (PCA 9 軸)",
     "character.bone_summary": "Bone length (4 部位)",
     "character.bs_summary": "Blendshapes",
@@ -85,12 +91,14 @@ const DICT = {
     "tooltip.pack_switch": "選択したプリセットを適用",
     "tooltip.reset": "全スライダーを既定値に戻す",
     "tooltip.export_fbx": "Blender 経由でリグ付き FBX を書き出す",
+    "tooltip.export_bvh": "Blender 経由で FBX を BVH に変換して書き出す",
     "tooltip.pack_clone": "default を複製して新規 pack 作成",
     "tooltip.pack_delete": "選択中の pack を削除 (default は不可)",
     "tooltip.fbx_rebuild": "Blender で npz と vertex JSON を再生成",
     "tooltip.save_png": "現在のビュワー表示を PNG として保存",
     "tooltip.make_download": "現在の Character スライダー値を character JSON としてダウンロード",
     "tooltip.video_download": "現在表示中のアニメーション FBX をローカルに保存",
+    "tooltip.video_download_bvh": "現在のアニメーション FBX を BVH に変換して保存",
 
     "lang.label": "言語",
   },
@@ -108,6 +116,10 @@ const DICT = {
     "section.fbx_rebuild": "FBX rebuild",
     "section.character": "Character",
     "section.health": "Health",
+    "section.pose_adjust": "Pose adjust",
+
+    "pose.lean_correction": "Lean correction",
+    "pose.lean_correction_hint": "When the pose leans forward, tilt it back. The 3D preview updates in real time.",
 
     "make.hint": "Tweak the MHR neutral T-pose character with the sliders below. Hit \"Download JSON\" to save the current body shape as a JSON file.",
     "make.download": "Download JSON",
@@ -139,6 +151,7 @@ const DICT = {
     "video.cancelled": "Cancelled",
     "video.done": "Inference done",
     "video.download": "Download FBX",
+    "video.download_bvh": "Download BVH",
     "video.rebuilding": "rebuilding FBX with new character…",
     "video.hint": "The Character panel below (preset / JSON) is baked into the rig. After motion inference, swapping a preset re-builds the FBX with the new body automatically.",
 
@@ -146,6 +159,7 @@ const DICT = {
     "character.load": "Load",
     "character.reset": "Reset",
     "character.export_fbx": "Download FBX",
+    "character.export_bvh": "Download BVH",
     "character.body_summary": "Body (PCA 9 axes)",
     "character.bone_summary": "Bone length (4 chains)",
     "character.bs_summary": "Blendshapes",
@@ -170,12 +184,14 @@ const DICT = {
     "tooltip.pack_switch": "Apply the selected preset",
     "tooltip.reset": "Reset all sliders to defaults",
     "tooltip.export_fbx": "Export a rigged FBX via Blender",
+    "tooltip.export_bvh": "Build a rigged FBX and convert it to BVH via Blender",
     "tooltip.pack_clone": "Clone default into a new pack",
     "tooltip.pack_delete": "Delete the selected pack (default is protected)",
     "tooltip.fbx_rebuild": "Rebuild npz + vertex JSON via Blender",
     "tooltip.save_png": "Save the current 3D view as PNG",
     "tooltip.make_download": "Download the current Character slider values as a character JSON",
     "tooltip.video_download": "Download the currently-playing animated FBX",
+    "tooltip.video_download_bvh": "Convert the current animated FBX to BVH and download it",
 
     "lang.label": "Language",
   },

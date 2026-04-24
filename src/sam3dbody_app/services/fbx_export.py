@@ -94,21 +94,23 @@ def _unpack_mhr_forward(tensor_tuple):
     return r, c
 
 
-def export_rigged_fbx(
+def build_rigged_package(
     job_id: str,
     settings: dict[str, Any] | None,
+    output_path: Path,
     *,
-    blender_exe: str,
-    timeout_sec: int = 600,
-) -> FBXExportResult:
-    """Build a rigged FBX for ``job_id`` with ``settings``. Spawns a Blender
-    headless subprocess for the final step."""
-    t0 = time.monotonic()
+    lean_chain: tuple[tuple[int, float], ...] | None = None,
+) -> dict[str, Any]:
+    """Run MHR forward for ``job_id``'s cached pose + the current character
+    ``settings`` and return the package dict consumed by
+    ``tools/build_rigged_fbx.py``.
+
+    Raises ``KeyError`` if the pose session isn't in the LRU cache.
+    """
     sess = pose_session.get(job_id)
     if sess is None:
         raise KeyError(f"no pose session for job_id {job_id!r}")
 
-    paths = get_paths()
     bundle = load_bundle()
     model = bundle.model
     device = torch.device(bundle.device)
@@ -126,6 +128,12 @@ def export_rigged_fbx(
     bp = s.get("body_params") or {}
     bl = s.get("bone_lengths") or {}
     bs = s.get("blendshapes") or {}
+    pa = s.get("pose_adjust") or {}
+    _lean_default = float(cs.POSE_ADJUST_DEFAULTS.get("lean_correction", 0.0))
+    try:
+        lean_strength = float(pa.get("lean_correction", _lean_default))
+    except (TypeError, ValueError):
+        lean_strength = _lean_default
 
     shape_params = cs.build_shape_params(bp, mhr_head.num_shape_comps, device)
     scale_params = torch.zeros((1, mhr_head.num_scale_comps), dtype=torch.float32, device=device)
@@ -201,8 +209,13 @@ def export_rigged_fbx(
     if any_bone_scaled:
         posed_coords = _scale_skeleton_rest(posed_coords, parents, cats, bone_scales)
 
-    # Single overwriting file — the frontend cache-busts with ?v=...
-    output_path = (paths.tmp_dir / "rigged.fbx").resolve()
+    # Bend the spine→neck chain backward in the EXPORTED rig so the FBX
+    # carries the lean correction instead of needing a baked-into-mesh fix.
+    if lean_strength > 1e-6:
+        posed_rots, posed_coords = cs.apply_pose_lean_correction_rig(
+            posed_rots, posed_coords, parents, lean_strength,
+            chain=lean_chain,
+        )
 
     names_full = [_KNOWN_JOINT_NAMES.get(i, f"joint_{i:03d}") for i in range(num_joints)]
 
@@ -239,10 +252,9 @@ def export_rigged_fbx(
     j_idx_new = j_idx_new[valid]
     w_val = w_val[valid]
 
-    log.info("rigged FBX: job=%s kept %d / %d joints",
-             job_id, len(kept_idx), num_joints)
+    log.info("rigged package: job=%s kept %d / %d joints", job_id, len(kept_idx), num_joints)
 
-    package = {
+    return {
         "output_path": str(output_path),
         "rest_verts": char_rest_verts.tolist(),
         "faces": faces.tolist(),
@@ -257,11 +269,22 @@ def export_rigged_fbx(
         "lbs_weight": w_val.tolist(),
     }
 
-    # Build script lives next to the app root (tools/build_rigged_fbx.py).
-    build_script = (paths.root / "tools" / "build_rigged_fbx.py").resolve()
+
+def run_blender_build(
+    package: dict[str, Any],
+    build_script: Path,
+    *,
+    blender_exe: str,
+    output_path: Path,
+    timeout_sec: int,
+    log_tag: str = "blender",
+) -> None:
+    """Write ``package`` to a temp JSON, spawn Blender headless with
+    ``build_script``, and verify that ``output_path`` was produced. Raises
+    ``RuntimeError`` on subprocess failure or silent output-missing failure.
+    """
     if not build_script.is_file():
         raise RuntimeError(f"Blender build script missing: {build_script}")
-
     if not blender_exe or not Path(blender_exe).exists():
         raise RuntimeError(
             f"Blender executable not found: {blender_exe!r}. "
@@ -273,18 +296,17 @@ def export_rigged_fbx(
         tmp_json = tmp.name
 
     cmd = [blender_exe, "--background", "--python", str(build_script), "--", "--input", tmp_json]
-    log.info("blender subprocess: %s", " ".join(shlex.quote(c) for c in cmd))
+    log.info("%s subprocess: %s", log_tag, " ".join(shlex.quote(c) for c in cmd))
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
         if result.returncode != 0:
-            log.error("blender stdout:\n%s", result.stdout or "")
-            log.error("blender stderr:\n%s", result.stderr or "")
+            log.error("%s stdout:\n%s", log_tag, result.stdout or "")
+            log.error("%s stderr:\n%s", log_tag, result.stderr or "")
             raise RuntimeError(
-                f"Blender FBX export failed (exit {result.returncode}). See server log."
+                f"{log_tag} build failed (exit {result.returncode}). See server log."
             )
         if result.stdout:
-            tail = result.stdout[-800:]
-            log.info("blender stdout tail:\n%s", tail)
+            log.info("%s stdout tail:\n%s", log_tag, result.stdout[-800:])
     finally:
         try:
             os.unlink(tmp_json)
@@ -292,11 +314,34 @@ def export_rigged_fbx(
             pass
 
     if not output_path.is_file():
-        # 終了コード 0 でも FBX が無い ≒ bpy.ops.export_scene.fbx 側の silent 失敗。
-        # トラブルシュート用に subprocess 出力を残す。
-        log.error("blender stdout:\n%s", result.stdout or "")
-        log.error("blender stderr:\n%s", result.stderr or "")
-        raise RuntimeError(f"Blender reported success but {output_path} was not created.")
+        # 終了コード 0 でも出力が無い ≒ Blender 側の silent 失敗。
+        log.error("%s stdout:\n%s", log_tag, result.stdout or "")
+        log.error("%s stderr:\n%s", log_tag, result.stderr or "")
+        raise RuntimeError(f"{log_tag} reported success but {output_path} was not created.")
+
+
+def export_rigged_fbx(
+    job_id: str,
+    settings: dict[str, Any] | None,
+    *,
+    blender_exe: str,
+    timeout_sec: int = 600,
+) -> FBXExportResult:
+    """Build a rigged FBX for ``job_id`` with ``settings``. Spawns a Blender
+    headless subprocess for the final step."""
+    t0 = time.monotonic()
+    paths = get_paths()
+
+    # Single overwriting file — the frontend cache-busts with ?v=...
+    output_path = (paths.tmp_dir / "rigged.fbx").resolve()
+    package = build_rigged_package(job_id, settings, output_path)
+
+    build_script = (paths.root / "tools" / "build_rigged_fbx.py").resolve()
+    run_blender_build(
+        package, build_script,
+        blender_exe=blender_exe, output_path=output_path,
+        timeout_sec=timeout_sec, log_tag="rigged_fbx",
+    )
 
     fbx_url = f"/tmp/rigged.fbx?v={uuid.uuid4().hex[:8]}"
     elapsed = time.monotonic() - t0

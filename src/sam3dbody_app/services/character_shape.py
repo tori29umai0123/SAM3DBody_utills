@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -23,6 +24,215 @@ import numpy as np
 import torch
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pose adjustment — "lean correction" applied AFTER mhr_forward.
+# ---------------------------------------------------------------------------
+#
+# ``lean_correction`` is a 0..1 slider that counteracts SAM3DBody's tendency
+# to return slightly forward-leaning poses on upright standing subjects.
+#
+# We modify the ``body_pose_params`` indirectly by post-rotating the
+# spine → neck kinematic chain, joint by joint, in body-local world space:
+#
+#     spine_01 (35)  → smallest backward pitch
+#     spine_02 (36)
+#     spine_03 (37)
+#     neck_01  (110) → largest backward pitch
+#
+# Each joint contributes an independent rotation around its own pivot; the
+# rotations compound down the chain so the head straightens up more than
+# the hips do (matches how real humans un-bend a forward-leaning spine).
+# The mesh variant blends the rotation by LBS subtree weight so vertices
+# dominated by e.g. arms / hands aren't dragged along with the torso. The
+# rig variant (used by FBX export) applies the full rotation to every
+# descendant joint so the exported rig carries the correction.
+#
+# Earlier version of this helper composed the correction into ``global_rot``
+# (ZYX euler) instead, but that tilted the whole body (including legs) and
+# came out diagonal whenever the body had any yaw. The chain-pivot approach
+# keeps the feet planted and only straightens the upper body.
+
+POSE_ADJUST_KEYS = ("lean_correction",)
+# Per-key neutral / default value for pose_adjust. ``lean_correction`` ships
+# at 0.5 ("いい感じ") because SAM3DBody's output is biased slightly forward
+# for standing subjects — starting at zero would require every user to move
+# the slider up to get a natural stance.
+POSE_ADJUST_DEFAULTS: dict[str, float] = {
+    "lean_correction": 0.5,
+}
+
+# (joint_id, base_angle_rad) pairs applied in chain order. base_angle scaled
+# by slider strength ∈ [0, 1]. strength=1.0 → ~20° cumulative backward tilt
+# at the head; strength=0.5 → ~10° (calibrated against standing reference
+# images 04_11, 01_10, 01_11, 02_11, 03_10, 04_10).
+LEAN_CHAIN_DEFAULT: tuple[tuple[int, float], ...] = (
+    (35,  math.radians(14.0)),    # spine_01
+    (36,  math.radians(14.0)),    # spine_02
+    (37,  math.radians(14.0)),   # spine_03
+    (110, math.radians(2.0)),   # neck_01
+    (113, math.radians(2.0)),    # head
+)
+
+def _subtree_indices(parents: np.ndarray, root: int) -> list[int]:
+    """Return ``root`` + all its descendants in ``parents``-encoded tree."""
+    num_joints = int(parents.shape[0])
+    children: dict[int, list[int]] = {}
+    for j in range(num_joints):
+        p = int(parents[j])
+        if p >= 0:
+            children.setdefault(p, []).append(j)
+    out: list[int] = []
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        out.append(n)
+        stack.extend(children.get(n, ()))
+    return out
+
+
+def _rotx_x_axis(theta: float) -> np.ndarray:
+    c, s = math.cos(theta), math.sin(theta)
+    return np.array([[1.0, 0.0, 0.0],
+                     [0.0,   c,  -s],
+                     [0.0,   s,   c]], dtype=np.float32)
+
+
+def apply_pose_lean_correction_mesh(
+    vertices: np.ndarray,
+    joint_coords_posed: np.ndarray,
+    strength: float,
+    *,
+    chain: tuple[tuple[int, float], ...] | None = None,
+) -> np.ndarray:
+    """Bend the posed mesh backward along the spine→neck chain, each joint
+    contributing its ``_LEAN_CHAIN`` share scaled by ``strength``.
+
+    Per-joint, rotates vertices around the joint's posed position by an angle
+    proportional to that vertex's total LBS weight in the joint's subtree —
+    so torso/head verts rotate fully while arm / hand / leg verts don't move
+    just because they share a subtree root. Corrections are applied in order
+    (spine→neck), and joint positions are carried forward between rounds so
+    each pivot reflects the previous rotations.
+
+    Requires ``_FACE_BS_CACHE`` populated via ``ensure_mhr_rest_cache``. The
+    MHR coord system (X right, Y up, Z forward) governs the rotation axis —
+    the X axis is the hip-lateral direction, so backward pitch = rotation
+    around X.
+    """
+    if strength is None:
+        return vertices
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        return vertices
+    if not math.isfinite(s) or s <= 1e-6:
+        return vertices
+
+    W = _FACE_BS_CACHE.get("lbs_weights")
+    parents = _FACE_BS_CACHE.get("joint_parents")
+    if W is None or parents is None or joint_coords_posed is None:
+        return vertices
+    num_joints = int(parents.shape[0])
+
+    # Normalised LBS weights (sum-to-1 per vertex), so subtree weight <= 1.
+    Wsum = W.sum(axis=1, keepdims=True).astype(np.float32)
+    Wsum_safe = np.where(Wsum > 1e-6, Wsum, 1.0)
+    W_norm = (W / Wsum_safe).astype(np.float32)
+
+    v = vertices.astype(np.float32, copy=True)
+    jc = joint_coords_posed.astype(np.float32, copy=True)
+
+    active_chain = chain if chain is not None else LEAN_CHAIN_DEFAULT
+    for joint_id, base_angle in active_chain:
+        if joint_id >= num_joints:
+            continue
+        theta = s * float(base_angle)
+        if abs(theta) < 1e-8:
+            continue
+
+        subtree = _subtree_indices(parents, joint_id)
+        if not subtree:
+            continue
+
+        pivot = jc[joint_id].copy()
+        # Per-vertex effective angle = subtree LBS weight × theta. Negative
+        # theta pitches backward (a point at +Z moves toward +Y), which is
+        # the "un-bend forward lean" direction in MHR coords.
+        sub_w = W_norm[:, subtree].sum(axis=1).astype(np.float32)  # (V,)
+        eff = (-theta) * sub_w  # (V,)
+        c = np.cos(eff)
+        sn = np.sin(eff)
+        dy = v[:, 1] - pivot[1]
+        dz = v[:, 2] - pivot[2]
+        v[:, 1] = pivot[1] + dy * c - dz * sn
+        v[:, 2] = pivot[2] + dy * sn + dz * c
+        # X untouched — rotation is around the world X axis at the pivot.
+
+        # Carry forward: rotate descendants' joint_coords by the FULL theta
+        # so subsequent chain pivots (spine_02 after spine_01, etc.) sit at
+        # the correct post-rotation position.
+        full_c = math.cos(-theta)
+        full_s = math.sin(-theta)
+        for k in subtree:
+            ky = jc[k, 1] - pivot[1]
+            kz = jc[k, 2] - pivot[2]
+            jc[k, 1] = pivot[1] + ky * full_c - kz * full_s
+            jc[k, 2] = pivot[2] + ky * full_s + kz * full_c
+
+    return v.astype(vertices.dtype)
+
+
+def apply_pose_lean_correction_rig(
+    posed_joint_rots: np.ndarray,
+    posed_joint_coords: np.ndarray,
+    parents: np.ndarray,
+    strength: float,
+    *,
+    chain: tuple[tuple[int, float], ...] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rig-space counterpart of ``apply_pose_lean_correction_mesh``.
+
+    Applies each chain joint's backward pitch rotation to that joint and
+    all descendants (no LBS blending — joints are rigid). Returns
+    ``(new_posed_joint_rots, new_posed_joint_coords)``. Used by the FBX
+    exporter so the correction rides in the exported rig.
+    """
+    rots = posed_joint_rots.astype(np.float32, copy=True)
+    coords = posed_joint_coords.astype(np.float32, copy=True)
+    if strength is None:
+        return rots, coords
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        return rots, coords
+    if not math.isfinite(s) or s <= 1e-6:
+        return rots, coords
+    if parents is None:
+        return rots, coords
+
+    num_joints = int(parents.shape[0])
+    active_chain = chain if chain is not None else LEAN_CHAIN_DEFAULT
+    for joint_id, base_angle in active_chain:
+        if joint_id >= num_joints:
+            continue
+        theta = s * float(base_angle)
+        if abs(theta) < 1e-8:
+            continue
+
+        subtree = _subtree_indices(parents, joint_id)
+        if not subtree:
+            continue
+
+        pivot = coords[joint_id].copy()
+        R_corr = _rotx_x_axis(-theta)  # world-frame backward pitch
+        for k in subtree:
+            off = coords[k] - pivot
+            coords[k] = pivot + R_corr @ off
+            rots[k] = R_corr @ rots[k]
+
+    return rots, coords
 
 
 # ---------------------------------------------------------------------------

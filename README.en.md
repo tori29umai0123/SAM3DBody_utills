@@ -2,10 +2,10 @@
 
 **Language:** [🇯🇵 日本語](README.md) ・ 🇬🇧 English (current)
 
-A **standalone FastAPI + Three.js web app** for turning a single image or video into a rigged 3D character and motion FBX — without needing ComfyUI.
+A **standalone FastAPI + Three.js web app** for turning a single image or video into a rigged 3D character and motion FBX / BVH — without needing ComfyUI.
 
-- **Image tab**: image → SAM3 person mask → SAM 3D Body pose estimation → render onto any body shape → export rigged FBX
-- **Video tab**: video → per-frame pose estimation → bake all frames as keyframes on a T-pose rig → export animated FBX (via a Blender subprocess)
+- **Image tab**: image → SAM3 person mask → SAM 3D Body pose estimation → render onto any body shape → export rigged FBX or single-frame BVH
+- **Video tab**: video → per-frame pose estimation → bake all frames as keyframes on a T-pose rig → export animated FBX or full-length BVH (via a Blender subprocess)
 - Full control over body shape (9-axis PCA), bone lengths, and ~20 blend shapes via sliders
 - Swappable **preset packs** for shipping custom blend-shape definitions
 
@@ -31,23 +31,28 @@ The web UI has **four tabs** at the top for image processing, video processing, 
 
 ### 📷 1. Image tab
 
-Retarget a pose from a single image onto any body shape and export a rigged FBX.
+Retarget a pose from a single image onto any body shape and export a rigged FBX / BVH.
 
-- Upload an image → SAM3 masks the person (default `text_prompt = "person"`)
+- Upload an image → SAM3 masks the person (default `text_prompt = "person"`). Transparent PNGs are composited onto white automatically before inference.
 - SAM 3D Body estimates the full-body pose
+- A **Lean correction** slider (0–1, default 0) un-bends a forward-leaning upper body along the spine→neck chain
 - In the bottom **Character panel**, pick a preset or drop in a custom character JSON to choose the target body shape
 - Three.js renders the result live
-- Clicking `Download FBX` kicks off a Blender subprocess (`tools/build_rigged_fbx.py`) that emits a rigged FBX — the interactive preview never touches Blender. (Blender required for FBX export.)
+- Clicking `Download FBX` kicks off a Blender subprocess (`tools/build_rigged_fbx.py`) that emits a rigged FBX — the interactive preview never touches Blender.
+- Clicking `Download BVH` builds the same rigged FBX and converts it to a **single-frame** BVH via `tools/fbx2bvh_simple.py`.
+- Blender is required for both FBX and BVH export.
 
 ### 🎬 2. Video tab
 
-Extract continuous motion from a video and export an animated FBX.
+Extract continuous motion from a video and export an animated FBX / BVH.
 
 - Upload a video → each frame runs through SAM 3D Body to estimate joint rotations
 - Pick a preset in the **Character panel** → all frames are baked as keyframes onto a rig built from that body shape
+- A **Lean correction** slider (0–1, default 0) is baked into every frame's rig (rebuild fires when you release the slider)
 - `root_motion_mode` picks the root-Y correction: `auto_ground_lock` (default), `free`, or `xz_only`
 - Fine-tune estimation with `bbox thr` / `fps` / `stride` / `max frames`
 - A Blender subprocess (`tools/build_animated_fbx.py`) emits the animated FBX
+- `Download BVH` rebuilds the current animated FBX and converts **all frames** to BVH via `tools/fbx2bvh_simple.py`
 - Drop the FBX into Unity / Unreal — it imports as a Humanoid-retargetable rig out of the box
 - Switching presets *after* estimation **rebuilds the FBX with the new character automatically**, reusing the cached motion
 
@@ -151,18 +156,6 @@ Weights auto-download from HuggingFace on first launch into `models/`:
 - `models/sam3dbody/` — SAM 3D Body + MHR weights (~3.5 GB, `jetjodh/sam-3d-body-dinov3`)
 - `models/sam3/` — SAM3 weights (`facebook/sam3`; requires `hf auth login` beforehand)
 
-Manual layout:
-
-```
-E:\SAM3DBody_utills\models\
-├── sam3dbody\
-│   ├── model.ckpt
-│   ├── model_config.yaml
-│   └── assets\mhr_model.pt
-└── sam3\
-    └── sam3.pt
-```
-
 ## 🚀 Running
 
 ### Windows
@@ -231,45 +224,6 @@ Resolution order:
    - Linux x86_64: `blender41-portable/blender`
    - Linux aarch64: `ARM_blender41-portable/bin/blender`
 3. `blender` / `blender.exe` on `PATH`
-
-## 📂 Project layout
-
-```
-SAM3DBody_utills/
-├── LICENSE                         ← multi-license summary (MIT + SAM + Apache 2.0)
-├── README.md                       ← Japanese
-├── README.en.md                    ← this file (English)
-├── config.ini
-├── pyproject.toml
-├── run.cmd / run.sh                ← starts uvicorn (auto port fallback + LAN URL)
-├── setup.cmd / setup.sh            ← thin wrapper; boots Python 3.11 via uv and calls setup.py
-├── setup.py                        ← the real setup: reset → uv venv/sync → Blender path
-├── wheels/                         ← redistributable CUDA wheels
-├── blender41-portable/             ← setup-installed portable Blender (Win / Linux x86_64, auto-DL)
-├── ARM_blender41-portable/         ← setup-installed portable Blender (Linux aarch64, auto-DL)
-├── models/                         ← SAM 3D Body / SAM3 weights (auto-DL)
-├── presets/
-│   └── default/                    ← default preset pack
-│       ├── face_blendshapes.npz
-│       ├── mhr_reference_vertices.json
-│       └── chara_settings_presets/
-├── src/sam3dbody_app/
-│   ├── main.py                     ← FastAPI entrypoint
-│   ├── core/
-│   │   ├── sam_3d_body/            ← vendored SAM 3D Body (SAM License)
-│   │   └── sam3/                   ← vendored SAM3 (Meta license)
-│   ├── routers/                    ← /api/* endpoints
-│   ├── services/                   ← Blender bridge / renderer / motion session
-│   └── ...
-├── web/                            ← frontend (Three.js, plain JS — no Vite)
-│   ├── index.html
-│   └── static/app.js
-├── tools/                          ← headless Blender subprocess scripts
-│   ├── build_rigged_fbx.py
-│   ├── build_animated_fbx.py
-│   └── extract_face_blendshapes.py
-└── docs/licenses/                  ← full sub-license texts
-```
 
 ## 📝 License
 
