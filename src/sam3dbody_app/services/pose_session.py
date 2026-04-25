@@ -1,6 +1,6 @@
-"""In-memory session cache for SAM3DBody pose results.
+"""In-memory session cache for pose results.
 
-After `/api/process` runs SAM3 + SAM3DBody we keep the pose tensors here so
+After `/api/process` runs segmentation + pose estimation we keep the pose tensors here so
 `/api/render` can re-apply body-shape sliders without re-running the heavy
 detection path. One entry per job_id; evicted by LRU size limit (default 16).
 """

@@ -36,8 +36,8 @@ async def process_video(
     stride: int = Form(1),
     blender_exe: str | None = Form(None),
 ) -> dict[str, Any]:
-    """Run per-frame SAM3 + SAM3DBody on the uploaded video and bake an
-    animated rigged FBX. SAM3 params come from ``config.ini [sam3]``."""
+    """Run per-frame segmentation + pose inference on the uploaded video and bake an
+    animated rigged FBX. Segmentation params come from ``config.ini [segmentation]``."""
     # Stream the upload to a temp file so PyAV can seek.
     if video.content_type and not video.content_type.startswith(("video/", "application/octet-stream")):
         raise HTTPException(status_code=400, detail=f"expected video/*, got {video.content_type}")
@@ -54,7 +54,7 @@ async def process_video(
 
     # Read config.ini live so edits hot-reload without restart.
     app_settings = AppSettings.load()
-    sam3 = app_settings.sam3
+    segmentation = app_settings.segmentation
     exe = blender_exe or app_settings.blender_exe
 
     try:
@@ -68,9 +68,11 @@ async def process_video(
             root_motion_mode=root_motion_mode,
             max_frames=max_frames,
             stride=max(1, int(stride)),
-            use_sam3=sam3.use_sam3,
-            sam3_text_prompt=sam3.text_prompt,
-            sam3_threshold=sam3.confidence_threshold,
+            use_segmentation=segmentation.enabled,
+            segmentation_backend=segmentation.backend,
+            segmentation_threshold=segmentation.confidence_threshold,
+            min_width_pixels=segmentation.min_width_pixels,
+            min_height_pixels=segmentation.min_height_pixels,
         )
     except RuntimeError as exc:
         log.exception("animated fbx export failed")
@@ -105,10 +107,10 @@ async def infer_motion(
     max_frames: int | None = Form(None),
     stride: int = Form(1),
 ) -> dict[str, Any]:
-    """Phase 1 of the motion → FBX pipeline: only the slow SAM3 + SAM3DBody
+    """Phase 1 of the motion → FBX pipeline: only the slow segmentation + pose
     per-frame inference. Returns a ``motion_id`` that the frontend then
     feeds back into ``/api/build_animated_fbx`` along with any character
-    settings. SAM3 params come from ``config.ini [sam3]``."""
+    settings. Segmentation params come from ``config.ini [segmentation]``."""
     if video.content_type and not video.content_type.startswith(("video/", "application/octet-stream")):
         raise HTTPException(status_code=400, detail=f"expected video/*, got {video.content_type}")
 
@@ -118,7 +120,7 @@ async def infer_motion(
         tmp_path = Path(tmp.name)
 
     app_settings = AppSettings.load()
-    sam3 = app_settings.sam3
+    segmentation = app_settings.segmentation
 
     try:
         motion = run_motion_inference(
@@ -127,9 +129,11 @@ async def infer_motion(
             inference_type=inference_type,
             max_frames=max_frames,
             stride=max(1, int(stride)),
-            use_sam3=sam3.use_sam3,
-            sam3_text_prompt=sam3.text_prompt,
-            sam3_threshold=sam3.confidence_threshold,
+            use_segmentation=segmentation.enabled,
+            segmentation_backend=segmentation.backend,
+            segmentation_threshold=segmentation.confidence_threshold,
+            min_width_pixels=segmentation.min_width_pixels,
+            min_height_pixels=segmentation.min_height_pixels,
             fps=fps,
         )
     except RuntimeError as exc:

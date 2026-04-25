@@ -1,8 +1,8 @@
-"""Animated FBX export — runs SAM3DBody per-frame on a video, then bakes the
+"""Animated FBX export — runs per-frame pose inference on a video, then bakes the
 motion into an FBX via Blender. The pipeline is split into two halves:
 
-1. ``run_motion_inference(video_path, ...)``: the slow phase (SAM3 +
-   SAM3DBody per frame). Writes a ``MotionSession`` into ``motion_session``'s
+1. ``run_motion_inference(video_path, ...)``: the slow phase (segmentation +
+   pose estimation per frame). Writes a ``MotionSession`` into ``motion_session``'s
    LRU cache and returns it. The session stores raw per-frame pose params
    (``body_pose_params``, ``hand_pose_params``, ``global_rot``,
    ``pred_cam_t``) which are shape-independent — swapping characters later
@@ -44,7 +44,7 @@ from .fbx_export import (
 )
 from .motion_session import MotionSession
 from .preset_pack import active_pack_paths
-from .sam3_mask import extract_best_person_mask
+from .segmentation import extract_best_mask
 from .sam3dbody_loader import load_bundle
 from .video_frames import iter_frames_rgb, probe_video
 
@@ -198,7 +198,7 @@ def _normalise_translations(raw_trans: list) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: per-frame SAM3 + SAM3DBody inference → cached MotionSession
+# Phase 1: per-frame segmentation + pose inference → cached MotionSession
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -218,12 +218,14 @@ def run_motion_inference(
     inference_type: str = "full",
     max_frames: int | None = None,
     stride: int = 1,
-    use_sam3: bool = True,
-    sam3_text_prompt: str = "person",
-    sam3_threshold: float = 0.5,
+    use_segmentation: bool = True,
+    segmentation_backend: str = "birefnet_lite",
+    segmentation_threshold: float = 0.5,
+    min_width_pixels: int = 0,
+    min_height_pixels: int = 0,
     fps: float | None = None,
 ) -> MotionSession:
-    """Iterate frames, run SAM3 (optional) + SAM3DBody on each, and cache
+    """Iterate frames, run segmentation + pose inference on each, and cache
     the raw per-frame outputs under a fresh ``motion_id``. Subsequent
     ``build_animated_fbx_from_motion`` calls reuse the cache so swapping
     character presets/JSON doesn't re-run the slow inference."""
@@ -248,20 +250,22 @@ def run_motion_inference(
         frame_count = f_i + 1
         mask_np = None
         bboxes = None
-        if use_sam3:
+        if use_segmentation:
             try:
                 from PIL import Image as _Image
                 pil = _Image.fromarray(frame_rgb)
-                mr = extract_best_person_mask(
+                mr = extract_best_mask(
                     pil,
-                    text_prompt=sam3_text_prompt,
-                    confidence_threshold=sam3_threshold,
+                    backend=segmentation_backend,
+                    confidence_threshold=segmentation_threshold,
+                    min_width_pixels=min_width_pixels,
+                    min_height_pixels=min_height_pixels,
                 )
                 h, w = frame_rgb.shape[:2]
                 bboxes = mr.bbox_xyxy.reshape(1, 4).astype(np.float32)
                 mask_np = mr.mask.reshape(1, h, w, 1).astype(np.uint8)
             except Exception as exc:  # noqa: BLE001
-                log.warning("frame %d SAM3 mask failed (%s); falling back to full frame", f_i, exc)
+                log.warning("frame %d segmentation failed (%s); falling back to full frame", f_i, exc)
 
         try:
             outputs = bundle.estimator.process_one_image(
@@ -417,7 +421,7 @@ def build_animated_package(
         )
         char_rest_coords = _scale_skeleton_rest(char_rest_coords, parents, cats, bone_scales)
 
-    # ===== Per-frame MHR forward (fast; no SAM3) =====
+    # ===== Per-frame MHR forward (fast; no segmentation pass) =====
     frames_posed_rots: list[np.ndarray] = []
     frames_posed_coords: list[np.ndarray] = []
     frames_feet_pos: list[np.ndarray] = []
@@ -610,9 +614,11 @@ def export_animated_fbx(
     root_motion_mode: str = "auto_ground_lock",
     max_frames: int | None = None,
     stride: int = 1,
-    use_sam3: bool = True,
-    sam3_text_prompt: str = "person",
-    sam3_threshold: float = 0.5,
+    use_segmentation: bool = True,
+    segmentation_backend: str = "birefnet_lite",
+    segmentation_threshold: float = 0.5,
+    min_width_pixels: int = 0,
+    min_height_pixels: int = 0,
     timeout_sec_base: int = 600,
 ) -> AnimatedFBXResult:
     """Run motion inference + build the FBX in one call. Retained as a
@@ -623,9 +629,11 @@ def export_animated_fbx(
         inference_type=inference_type,
         max_frames=max_frames,
         stride=stride,
-        use_sam3=use_sam3,
-        sam3_text_prompt=sam3_text_prompt,
-        sam3_threshold=sam3_threshold,
+        use_segmentation=use_segmentation,
+        segmentation_backend=segmentation_backend,
+        segmentation_threshold=segmentation_threshold,
+        min_width_pixels=min_width_pixels,
+        min_height_pixels=min_height_pixels,
         fps=fps,
     )
     return build_animated_fbx_from_motion(

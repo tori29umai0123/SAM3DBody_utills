@@ -20,9 +20,9 @@ async def process_image(
     image: UploadFile = File(...),
     inference_type: str = "full",
 ):
-    """Run SAM3 person mask + SAM3DBody pose estimation on the uploaded image.
+    """Run segmentation + pose estimation on the uploaded image.
 
-    SAM3 parameters come from ``config.ini [sam3]`` — edit the ini to change
+    Segmentation parameters come from ``config.ini [segmentation]`` — edit the ini to change
     them. Inference type stays on the URL since it's a per-call choice."""
     if image.content_type and not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=f"expected image/*, got {image.content_type}")
@@ -32,7 +32,7 @@ async def process_image(
         pil = Image.open(io.BytesIO(raw))
         pil.load()
         # Composite transparency over white and drop alpha so downstream
-        # SAM3 / SAM3DBody never sees RGBA / LA / palette-with-alpha modes
+        # Segmentation / pose estimation never sees RGBA / LA / palette-with-alpha modes
         # (they crash on anything other than 3-channel RGB).
         pil = _normalize_input_image(pil)
     except Exception as exc:
@@ -40,16 +40,16 @@ async def process_image(
 
     # Read fresh every call so config.ini edits hot-reload.
     settings = AppSettings.load()
-    sam3 = settings.sam3
+    segmentation = settings.segmentation
     try:
         result = run_image_to_obj(
             pil,
             inference_type=inference_type,
-            text_prompt=sam3.text_prompt,
-            use_sam3=sam3.use_sam3,
-            confidence_threshold=sam3.confidence_threshold,
-            min_width_pixels=sam3.min_width_pixels,
-            min_height_pixels=sam3.min_height_pixels,
+            use_segmentation=segmentation.enabled,
+            segmentation_backend=segmentation.backend,
+            confidence_threshold=segmentation.confidence_threshold,
+            min_width_pixels=segmentation.min_width_pixels,
+            min_height_pixels=segmentation.min_height_pixels,
             device_mode=settings.device,
         )
     except Exception as exc:

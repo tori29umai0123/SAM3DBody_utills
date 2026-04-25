@@ -1,6 +1,6 @@
 """In-memory cache for animated-FBX motion data.
 
-Video motion inference (per-frame SAM3 + SAM3DBody) is the slow step and
+Video motion inference (per-frame segmentation + pose estimation) is the slow step and
 shape-independent. The Blender FBX build is comparatively cheap but depends
 on the current character settings. Separating the two lets us:
 
@@ -24,7 +24,7 @@ import numpy as np
 @dataclass
 class MotionSession:
     motion_id: str
-    # Per-frame raw SAM3DBody outputs. ``None`` whenever that frame had no
+    # Per-frame raw pose outputs. ``None`` whenever that frame had no
     # detection — callers reuse the last good frame's values to keep clips
     # contiguous, same as the old monolithic pipeline did.
     frames_body_pose: List[Optional[np.ndarray]]   # (133,) each

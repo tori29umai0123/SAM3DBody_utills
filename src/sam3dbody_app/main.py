@@ -72,18 +72,12 @@ async def lifespan(app: FastAPI):
     # bottom of the console after uvicorn's startup logs and the preload
     # log lines — users copy it from the tail of the terminal.
     async def _preload():
-        from .services import sam3_loader, sam3dbody_loader
+        from .services import sam3dbody_loader
         try:
             await asyncio.to_thread(sam3dbody_loader.load_bundle)
             log.info("preload: SAM3DBody bundle ready")
         except Exception:  # noqa: BLE001
             log.exception("preload: SAM3DBody load failed (will retry lazily)")
-        if settings.sam3.use_sam3:
-            try:
-                await asyncio.to_thread(sam3_loader.load_bundle)
-                log.info("preload: SAM3 bundle ready")
-            except Exception:  # noqa: BLE001
-                log.exception("preload: SAM3 load failed (will retry lazily)")
         _print_access_urls()
 
     preload_task = asyncio.create_task(_preload())

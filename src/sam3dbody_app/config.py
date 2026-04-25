@@ -99,13 +99,13 @@ def _ensure_config_ini(paths: AppPaths) -> None:
     cp["features"].setdefault("preset_pack_admin", "false")
     cp["features"].setdefault("debug", "false")
 
-    if "sam3" not in cp:
-        cp["sam3"] = {}
-    cp["sam3"].setdefault("use_sam3", "true")
-    cp["sam3"].setdefault("text_prompt", "person")
-    cp["sam3"].setdefault("confidence_threshold", "0.5")
-    cp["sam3"].setdefault("min_width_pixels", "0")
-    cp["sam3"].setdefault("min_height_pixels", "0")
+    if "segmentation" not in cp:
+        cp["segmentation"] = {}
+    cp["segmentation"].setdefault("enabled", "true")
+    cp["segmentation"].setdefault("backend", "birefnet_lite")
+    cp["segmentation"].setdefault("confidence_threshold", "0.5")
+    cp["segmentation"].setdefault("min_width_pixels", "0")
+    cp["segmentation"].setdefault("min_height_pixels", "0")
 
     if "blender" not in cp:
         cp["blender"] = {}
@@ -121,9 +121,9 @@ def _ensure_config_ini(paths: AppPaths) -> None:
             "#                                   Default 'false' so a fresh install ships a\n"
             "#                                   read-only UI until the user opts in.\n"
             "#             debug             : 'true' to show the Health panel in the UI.\n"
-            "# [sam3]      segmentation defaults for image + video pipelines. The UI no longer\n"
+            "# [segmentation] segmentation defaults for image + video pipelines. The UI no longer\n"
             "#             exposes these — edit here to change them (hot-reload on each request).\n"
-            "#               use_sam3, text_prompt, confidence_threshold,\n"
+            "#               enabled, backend, confidence_threshold,\n"
             "#               min_width_pixels, min_height_pixels\n"
             "# [blender]   exe_path : absolute path to blender(.exe). Normally written by\n"
             "#                        setup.cmd/setup.sh. Leave empty to fall back to the\n"
@@ -221,18 +221,19 @@ def _ini_feature_flag(paths: AppPaths, key: str, default: bool = False) -> bool:
 
 
 @dataclass(frozen=True)
-class Sam3Settings:
-    """SAM3 person-mask segmentation defaults. Sourced from ``[sam3]``."""
+class SegmentationSettings:
+    """Segmentation defaults read from `[segmentation]`."""
 
-    use_sam3: bool
-    text_prompt: str
+    enabled: bool
+    backend: str
     confidence_threshold: float
     min_width_pixels: int
     min_height_pixels: int
 
 
-def _ini_sam3_settings(paths: AppPaths) -> Sam3Settings:
+def _ini_segmentation_settings(paths: AppPaths) -> SegmentationSettings:
     cp = _read_config_ini(paths)
+    section = "segmentation"
     def _bool(s: str) -> bool:
         return s.strip().lower() in ("1", "true", "yes", "on")
     def _float(s: str, d: float) -> float:
@@ -241,12 +242,12 @@ def _ini_sam3_settings(paths: AppPaths) -> Sam3Settings:
     def _int(s: str, d: int) -> int:
         try: return int(s)
         except Exception: return d
-    return Sam3Settings(
-        use_sam3=_bool(cp.get("sam3", "use_sam3", fallback="true")),
-        text_prompt=cp.get("sam3", "text_prompt", fallback="person").strip() or "person",
-        confidence_threshold=_float(cp.get("sam3", "confidence_threshold", fallback="0.5"), 0.5),
-        min_width_pixels=_int(cp.get("sam3", "min_width_pixels", fallback="0"), 0),
-        min_height_pixels=_int(cp.get("sam3", "min_height_pixels", fallback="0"), 0),
+    return SegmentationSettings(
+        enabled=_bool(cp.get(section, "enabled", fallback="true")),
+        backend=cp.get(section, "backend", fallback="birefnet_lite").strip() or "birefnet_lite",
+        confidence_threshold=_float(cp.get(section, "confidence_threshold", fallback="0.5"), 0.5),
+        min_width_pixels=_int(cp.get(section, "min_width_pixels", fallback="0"), 0),
+        min_height_pixels=_int(cp.get(section, "min_height_pixels", fallback="0"), 0),
     )
 
 
@@ -258,7 +259,7 @@ class AppSettings:
     device: str
     feature_preset_pack_admin: bool
     feature_debug: bool
-    sam3: Sam3Settings
+    segmentation: SegmentationSettings
 
     @staticmethod
     def load() -> "AppSettings":
@@ -270,7 +271,7 @@ class AppSettings:
             device=os.environ.get("SAM3DBODY_DEVICE", "cuda"),
             feature_preset_pack_admin=_ini_feature_flag(paths, "preset_pack_admin", False),
             feature_debug=_ini_feature_flag(paths, "debug", False),
-            sam3=_ini_sam3_settings(paths),
+            segmentation=_ini_segmentation_settings(paths),
         )
 
 

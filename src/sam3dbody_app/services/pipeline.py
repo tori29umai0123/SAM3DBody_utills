@@ -1,4 +1,4 @@
-"""Image → SAM3 person mask → SAM3DBody → OBJ pipeline."""
+"""Image -> segmentation mask -> pose estimation -> OBJ pipeline."""
 from __future__ import annotations
 
 import logging
@@ -12,9 +12,8 @@ from PIL import Image
 
 from ..config import get_paths
 from . import pose_session
-from .obj_export import write_obj_flip_y
 from .renderer import render_from_session
-from .sam3_mask import extract_best_person_mask
+from .segmentation import extract_best_mask
 from .sam3dbody_loader import load_bundle
 
 log = logging.getLogger(__name__)
@@ -36,7 +35,7 @@ class PipelineResult:
 
 
 def _normalize_input_image(img: Image.Image) -> Image.Image:
-    """Return a plain RGB image safe for SAM3/SAM3DBody.
+    """Return a plain RGB image safe for segmentation and pose estimation.
 
     Transparent PNGs often arrive as RGBA/LA or palette images with a
     transparency table. Passing those modes through PIL/NumPy is fine for our
@@ -89,17 +88,16 @@ def run_image_to_obj(
     pil_image: Image.Image,
     *,
     inference_type: str = "full",
-    text_prompt: str = "person",
-    use_sam3: bool = True,
+    use_segmentation: bool = True,
+    segmentation_backend: str = "birefnet_lite",
     confidence_threshold: float = 0.5,
     min_width_pixels: int = 0,
     min_height_pixels: int = 0,
     device_mode: str | None = None,
 ) -> PipelineResult:
-    """Run SAM3 person mask → SAM3DBody on a single image and produce an OBJ.
+    """Run segmentation + pose estimation on a single image and produce an OBJ.
 
-    `use_sam3=False` falls back to using the entire image as the bbox (used for
-    debugging or when SAM3 is unavailable).
+    `use_segmentation=False` falls back to using the entire image as the bbox.
     """
     t0 = time.monotonic()
     paths = get_paths()
@@ -110,21 +108,20 @@ def run_image_to_obj(
     h, w = rgb.shape[:2]
 
     mask_url: str | None = None
-    sam3_score: float | None = None
+    segmentation_score: float | None = None
     num_candidates = 0
 
-    if use_sam3:
-        mask_result = extract_best_person_mask(
+    if use_segmentation:
+        mask_result = extract_best_mask(
             pil_image,
-            text_prompt=text_prompt,
+            backend=segmentation_backend,
             confidence_threshold=confidence_threshold,
             min_width_pixels=min_width_pixels,
             min_height_pixels=min_height_pixels,
         )
         bboxes = mask_result.bbox_xyxy.reshape(1, 4).astype(np.float32)
-        # SAM3DBody expects (-1, H, W, 1) uint8.
         masks = mask_result.mask.reshape(1, h, w, 1).astype(np.uint8)
-        sam3_score = mask_result.score
+        segmentation_score = mask_result.score
         num_candidates = mask_result.num_candidates
     else:
         bboxes = np.array([[0, 0, w, h]], dtype=np.float32)
@@ -134,13 +131,13 @@ def run_image_to_obj(
         rgb, bboxes=bboxes, masks=masks, inference_type=inference_type
     )
     if not results:
-        raise RuntimeError("SAM3DBody returned no detections")
+        raise RuntimeError("pose estimator returned no detections")
 
     best = results[0]
     faces = bundle.estimator.faces  # (F, 3)
     job_id = uuid.uuid4().hex[:12]
 
-    if use_sam3 and masks is not None:
+    if use_segmentation and masks is not None:
         # Single overwriting file — the frontend adds a cache-bust query
         # string so each call's PNG is distinct from the browser's view.
         mask_path = paths.tmp_dir / "mask.png"
@@ -160,7 +157,7 @@ def run_image_to_obj(
         "pred_keypoints_3d": _numpy_clean(best.get("pred_keypoints_3d")),
     }
 
-    # Cache the pose so slider changes can re-render without re-running SAM3+SAM3DBody.
+    # Cache the pose so slider changes can re-render without re-running segmentation.
     pose_session.put(pose_session.PoseSession(
         job_id=job_id,
         pose_json=pose_json,
@@ -189,10 +186,10 @@ def run_image_to_obj(
 
     elapsed = time.monotonic() - t0
     log.info(
-        "pipeline job %s: image=%dx%d sam3_score=%s cands=%d elapsed=%.2fs",
+        "pipeline job %s: image=%dx%d score=%s cands=%d backend=%s elapsed=%.2fs",
         job_id, w, h,
-        f"{sam3_score:.3f}" if sam3_score is not None else "n/a",
-        num_candidates, elapsed,
+        f"{segmentation_score:.3f}" if segmentation_score is not None else "n/a",
+        num_candidates, segmentation_backend if use_segmentation else "none", elapsed,
     )
     return PipelineResult(
         job_id=job_id,
@@ -201,7 +198,7 @@ def run_image_to_obj(
         width=w,
         height=h,
         num_detections=num_candidates or len(results),
-        best_score=sam3_score,
+        best_score=segmentation_score,
         elapsed_sec=elapsed,
         mask_url=mask_url,
         bbox_xyxy=bboxes[0].tolist(),

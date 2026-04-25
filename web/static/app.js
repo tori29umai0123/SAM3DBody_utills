@@ -15,7 +15,7 @@ const runBtn = $("run-btn");
 const runCancelBtn = $("run-cancel-btn");
 const runInfo = $("run-info");
 const overlay = $("viewport-overlay");
-// SAM3 segmentation params now live in config.ini [sam3]; no longer in UI.
+// Segmentation params now live in config.ini [segmentation]; no longer in UI.
 const characterSection = $("character-section");
 const presetSelect = $("preset-select");
 const loadPresetBtn = $("load-preset-btn");
@@ -75,7 +75,7 @@ function activateTab(name) {
   document.querySelectorAll(".tab-nav button[data-tab]").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === name);
   });
-  try { localStorage.setItem("sam3d.tab", name); } catch (_e) {}
+  try { localStorage.setItem("body3d.tab", name); } catch (_e) {}
 
   // Swap the viewport's cached mesh/animation/camera state to match the tab.
   viewer.switchTab(name);
@@ -111,7 +111,7 @@ function initTabs() {
     b.addEventListener("click", () => activateTab(b.dataset.tab));
   });
   let initial = "image";
-  try { initial = localStorage.getItem("sam3d.tab") || "image"; } catch (_e) {}
+  try { initial = localStorage.getItem("body3d.tab") || "image"; } catch (_e) {}
   activateTab(initial);
 }
 
@@ -2108,7 +2108,7 @@ exportFbxBtn.addEventListener("click", async () => {
     // Server always writes to tmp/rigged.fbx; offer a meaningful save name
     // so the user-side Save dialog does not default to "rigged.fbx".
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const savedAs = `sam3d_rigged_${stamp}.fbx`;
+    const savedAs = `body3d_rigged_${stamp}.fbx`;
     const a = document.createElement("a");
     a.href = j.fbx_url;
     a.download = savedAs;
@@ -2144,7 +2144,7 @@ exportBvhBtn?.addEventListener("click", async () => {
     const j = await r.json();
     const ms = Math.round(performance.now() - t0);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const savedAs = `sam3d_rigged_${stamp}.bvh`;
+    const savedAs = `body3d_rigged_${stamp}.bvh`;
     triggerDownload(j.bvh_url, savedAs);
     if (bvhInfo) bvhInfo.textContent = `BVH ${j.elapsed_sec}s (wall ${ms}ms) - saved as ${savedAs}`;
   } catch (e) {
@@ -2478,7 +2478,7 @@ videoDrop.addEventListener("drop", (e) => {
   if (f) onVideoChosen(f);
 });
 
-// Phase 1: "モーションを推定" — runs only the slow SAM3 + SAM3DBody pass
+// Phase 1: "モーションを推定" — runs only the slow segmentation + pose pass
 // and caches the raw per-frame params. Phase 2 (FBX build) is triggered
 // immediately afterward with the currently-selected character settings
 // so the user sees the rig animate right away; subsequent preset/JSON
@@ -2619,7 +2619,7 @@ function _setVideoBusy(busy) {
 videoDownloadBtn.addEventListener("click", () => {
   if (!currentAnimatedFbxUrl) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const savedAs = `sam3d_animated_${stamp}.fbx`;
+  const savedAs = `body3d_animated_${stamp}.fbx`;
   triggerDownload(currentAnimatedFbxUrl, savedAs);
   if (videoDownloadInfo) videoDownloadInfo.textContent = `saved as ${savedAs}`;
 });
@@ -2646,7 +2646,7 @@ videoDownloadBvhBtn?.addEventListener("click", async () => {
     const j = await r.json();
     const ms = Math.round(performance.now() - t0);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const savedAs = `sam3d_animated_${stamp}.bvh`;
+    const savedAs = `body3d_animated_${stamp}.bvh`;
     triggerDownload(j.bvh_url, savedAs);
     if (videoDownloadBvhInfo) {
       videoDownloadBvhInfo.textContent =

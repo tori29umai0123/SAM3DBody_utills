@@ -1,16 +1,16 @@
-// Static-text i18n for the SAM 3D Body Standalone UI.
+// Static-text i18n for the 3D Body Standalone UI.
 //
 // - Every static DOM string carries a `data-i18n="key"` attribute (or
 //   `data-i18n-placeholder` / `data-i18n-title` for input placeholders and
 //   button tooltips). `applyLang()` walks the tree and overwrites those
 //   fragments with the current dictionary's value.
-// - Language preference persists in localStorage under `sam3d.lang`.
-// - app.js emits a `sam3d:langchange` event after switching so dynamic
+// - Language preference persists in localStorage under `body3d.lang`.
+// - app.js emits a `body3d:langchange` event after switching so dynamic
 //   components can refresh their own copy if needed.
 
 const DICT = {
   ja: {
-    "app.title": "SAM 3D Body Standalone",
+    "app.title": "3D Body Standalone",
     "tab.image": "画像",
     "tab.video": "動画",
     "tab.make": "キャラメイク",
@@ -108,8 +108,8 @@ const DICT = {
     "make.downloaded": "JSON を保存しました",
 
     "input.drop": "クリックして画像を選択 / ドロップ",
-    "input.sam3_settings": "SAM3 segmentation",
-    "input.use_sam3": "SAM3 マスクを使う",
+    "input.segmentation_settings": "Segmentation",
+    "input.use_segmentation": "セグメンテーションを使う",
     "input.prompt": "prompt",
     "input.threshold": "threshold",
     "input.min_w": "min w (px)",
@@ -121,8 +121,8 @@ const DICT = {
 
     "video.drop": "動画を選択 / ドロップ",
     "video.params": "パラメータ",
-    "video.use_sam3": "SAM3 マスクを使う",
-    "video.sam3_thr": "sam3 threshold",
+    "video.use_segmentation": "セグメンテーションを使う",
+    "video.segmentation_thr": "segmentation threshold",
     "video.bbox_thr": "bbox thr",
     "video.root_motion": "root motion",
     "video.fps": "fps (0 = 自動)",
@@ -178,7 +178,7 @@ const DICT = {
     "lang.label": "言語",
   },
   en: {
-    "app.title": "SAM 3D Body Standalone",
+    "app.title": "3D Body Standalone",
     "tab.image": "Image",
     "tab.video": "Video",
     "tab.make": "Character Make",
@@ -276,8 +276,8 @@ const DICT = {
     "make.downloaded": "JSON saved",
 
     "input.drop": "Click to pick an image, or drop one here",
-    "input.sam3_settings": "SAM3 segmentation",
-    "input.use_sam3": "use SAM3 mask",
+    "input.segmentation_settings": "Segmentation",
+    "input.use_segmentation": "use segmentation",
     "input.prompt": "prompt",
     "input.threshold": "threshold",
     "input.min_w": "min w (px)",
@@ -289,8 +289,8 @@ const DICT = {
 
     "video.drop": "Click to pick a video, or drop one here",
     "video.params": "Parameters",
-    "video.use_sam3": "use SAM3 mask",
-    "video.sam3_thr": "sam3 threshold",
+    "video.use_segmentation": "use segmentation",
+    "video.segmentation_thr": "segmentation threshold",
     "video.bbox_thr": "bbox thr",
     "video.root_motion": "root motion",
     "video.fps": "fps (0 = auto)",
@@ -348,7 +348,7 @@ const DICT = {
 };
 
 const SUPPORTED = Object.keys(DICT);
-const STORAGE_KEY = "sam3d.lang";
+const STORAGE_KEY = "body3d.lang";
 
 function resolveInitialLang() {
   try {
@@ -391,7 +391,7 @@ function applyLang(lang) {
   if (sel && sel.value !== lang) sel.value = lang;
 
   // Let the rest of the app (dynamic strings) react if they want.
-  document.dispatchEvent(new CustomEvent("sam3d:langchange", { detail: { lang } }));
+  document.dispatchEvent(new CustomEvent("body3d:langchange", { detail: { lang } }));
 }
 
 function initLanguagePicker() {

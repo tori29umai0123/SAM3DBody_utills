@@ -1,7 +1,7 @@
 [project]
 name = "sam3dbody-standalone"
 version = "0.1.0"
-description = "Standalone WebUI for SAM 3D Body + SAM3 person mask (Win/Linux)"
+description = "Standalone WebUI for SAM 3D Body + BiRefNet-based masking (Win/Linux)"
 requires-python = "==3.11.*"
 dependencies = [
     # Web backend
@@ -32,19 +32,12 @@ dependencies = [
     # warm 1.56s で完走、スコア不変)。約 350MB の install サイズを節約。復活させたい時は
     # `uv pip install xformers>=0.0.34 --index-url https://download.pytorch.org/whl/cu128`
 
-    # SAM3 (Meta Segment Anything 3 — 公式 `sam3` を `src/sam3dbody_app/core/sam3/` に vendor 済み)
-    "einops>=0.8.0",
-    "ftfy>=6.1.0",
-    "regex>=2024.0.0",
-    "iopath>=0.1.10",
-    "timm>=1.0.24",
-    "scikit-image>=0.22.0",
+    # BiRefNet segmentation
     "av>=14.0",
-    "pycocotools>=2.0.11",
-    "tqdm",
-    "psutil",
-    "huggingface-hub>=0.23.0",
-    "transformers>=4.50.0",
+    "transformers>=5.6.0",
+    "huggingface_hub>=1.0.0",
+    "einops>=0.8.0",
+    "timm>=1.0.24",
 
     # decord は video フレーム読込の fast path だが、Linux aarch64 に
     # wheel が無く、かつ image-mode 推論では使われないため外す。
