@@ -151,3 +151,60 @@ body.ui-busy { cursor: wait; }
 #viewport-overlay.busy { top: 50%; right: 50%; transform: translate(50%, -50%);
   background: rgba(0, 0, 0, 0.8); font-size: 14px; padding: 12px 18px;
   max-width: none; }
+
+/* -------------------------------------------------------------------------
+ * Pose-edit (rotation) mode — image tab only.
+ *
+ * When ``body.pose-edit-mode`` is set, everything outside the rotation
+ * editor panel is locked: tab nav freezes, the file drop / run button, the
+ * lean slider, the Character panel (preset picker, JSON upload) all become
+ * inert. Export FBX/BVH stay interactive so "微調整した後のポーズで出力"
+ * works. During a FBX/BVH export, ``body.ui-export-busy`` layers on a
+ * second lock that also disables the rotation UI itself.
+ * ---------------------------------------------------------------------- */
+body.pose-edit-mode [data-pose-lock] {
+  pointer-events: none; user-select: none; opacity: 0.45;
+}
+body.pose-edit-mode .tab-nav button[data-tab] {
+  pointer-events: none; opacity: 0.5; cursor: not-allowed;
+}
+body.pose-edit-mode .tab-nav button[data-tab].active { opacity: 0.9; }
+
+#pose-edit-toggle-btn {
+  margin-top: 8px; width: 100%; padding: 8px 12px; font-size: 13px;
+  background: #355; color: #cef; border: 1px solid #588; border-radius: 4px;
+  cursor: pointer;
+}
+#pose-edit-toggle-btn:hover:not(:disabled) { background: #477; }
+body.pose-edit-mode #pose-edit-toggle-btn {
+  background: #5a2a2a; border-color: #944; color: #fcc;
+}
+body.pose-edit-mode #pose-edit-toggle-btn:hover:not(:disabled) { background: #733; }
+
+#pose-edit-panel {
+  margin-top: 8px; padding: 8px; border: 1px solid #2a2a2a;
+  border-radius: 4px; background: #14151a;
+}
+#pose-edit-panel .param-row > span:first-child { min-width: 110px; }
+#pose-edit-panel select { width: 100%; }
+#pose-reset-bone-btn, #pose-reset-all-btn,
+#pose-undo-btn, #pose-redo-btn {
+  flex: 1; padding: 5px 8px; font-size: 11px;
+  background: #2a3036; color: #cef; border: 1px solid #445;
+  border-radius: 3px; cursor: pointer;
+}
+#pose-reset-bone-btn:hover:not(:disabled),
+#pose-reset-all-btn:hover:not(:disabled),
+#pose-undo-btn:hover:not(:disabled),
+#pose-redo-btn:hover:not(:disabled) { background: #344; }
+
+/* Dedicated second-tier lock applied by the export handlers; it stacks on
+ * top of the normal pose-edit lock so all UI (including the rotation
+ * editor) is inert while a Blender subprocess is running. */
+body.ui-export-busy #pose-edit-panel,
+body.ui-export-busy #pose-edit-toggle-btn,
+body.ui-export-busy #export-fbx-btn,
+body.ui-export-busy #export-bvh-btn {
+  pointer-events: none; opacity: 0.5;
+}
+body.ui-export-busy { cursor: wait; }

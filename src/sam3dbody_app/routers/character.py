@@ -98,4 +98,5 @@ async def render(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "obj_url": result.obj_url,
         "elapsed_sec": round(result.elapsed_sec, 3),
         "settings": result.settings,
+        "humanoid_skeleton": result.humanoid_skeleton,
     }

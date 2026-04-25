@@ -41,7 +41,10 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 
 _RENDER_CACHE_MAX = 128
-_render_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+# Cache entries are (vertices, humanoid_skeleton_dict_or_None) — the skeleton
+# is snapshotted post-lean / pre-overrides so slider drags get the same
+# base frame without a fresh MHR forward each time.
+_render_cache: "OrderedDict[str, tuple[np.ndarray, dict[str, Any] | None]]" = OrderedDict()
 
 
 def _render_cache_key(job_id: str, settings_norm: dict[str, Any]) -> str:
@@ -50,15 +53,17 @@ def _render_cache_key(job_id: str, settings_norm: dict[str, Any]) -> str:
     )
 
 
-def _render_cache_get(key: str) -> np.ndarray | None:
+def _render_cache_get(key: str) -> tuple[np.ndarray, dict[str, Any] | None] | None:
     if key not in _render_cache:
         return None
     _render_cache.move_to_end(key)
     return _render_cache[key]
 
 
-def _render_cache_put(key: str, verts: np.ndarray) -> None:
-    _render_cache[key] = verts
+def _render_cache_put(
+    key: str, entry: tuple[np.ndarray, dict[str, Any] | None],
+) -> None:
+    _render_cache[key] = entry
     _render_cache.move_to_end(key)
     while len(_render_cache) > _RENDER_CACHE_MAX:
         _render_cache.popitem(last=False)
@@ -77,10 +82,11 @@ class RenderResult:
     obj_path: str
     elapsed_sec: float
     settings: dict[str, Any]
+    humanoid_skeleton: dict[str, Any] | None = None
 
 
 def _empty_settings() -> dict[str, Any]:
-    return {
+    base: dict[str, Any] = {
         "body_params": {k: 0.0 for k in cs.BODY_PARAM_KEYS},
         "bone_lengths": {k: 1.0 for k in cs.BONE_LENGTH_KEYS},
         "blendshapes": {},
@@ -89,6 +95,40 @@ def _empty_settings() -> dict[str, Any]:
             for k in cs.POSE_ADJUST_KEYS
         },
     }
+    base["pose_adjust"]["rotation_overrides"] = {}
+    return base
+
+
+def _normalise_rotation_overrides_payload(raw: Any) -> dict[str, list[float]]:
+    """Normalise the frontend ``rotation_overrides`` payload into a plain
+    ``{ "joint_id_str": [rx, ry, rz] }`` dict. Drops non-humanoid / malformed
+    entries so downstream consumers don't have to re-validate."""
+    if not raw:
+        return {}
+    items = raw.items() if isinstance(raw, dict) else raw
+    out: dict[str, list[float]] = {}
+    for entry in items:
+        if isinstance(entry, tuple) and len(entry) == 2:
+            jid, euler = entry
+        else:
+            continue
+        try:
+            j = int(jid)
+        except (TypeError, ValueError):
+            continue
+        if j not in cs.HUMANOID_JOINT_IDS:
+            continue
+        try:
+            rx = float(euler[0]); ry = float(euler[1]); rz = float(euler[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        import math as _m
+        if not (_m.isfinite(rx) and _m.isfinite(ry) and _m.isfinite(rz)):
+            continue
+        if abs(rx) < 1e-8 and abs(ry) < 1e-8 and abs(rz) < 1e-8:
+            continue
+        out[str(j)] = [rx, ry, rz]
+    return out
 
 
 def _normalise_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
@@ -111,7 +151,72 @@ def _normalise_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
             base["pose_adjust"][k] = float(pa.get(k, default_v))
         except (TypeError, ValueError):
             base["pose_adjust"][k] = default_v
+    base["pose_adjust"]["rotation_overrides"] = _normalise_rotation_overrides_payload(
+        pa.get("rotation_overrides")
+    )
     return base
+
+
+def _mat3_to_quat(R: np.ndarray) -> tuple[float, float, float, float]:
+    """Rotation matrix → quaternion ``(qx, qy, qz, qw)`` (three.js order)."""
+    m00, m01, m02 = float(R[0, 0]), float(R[0, 1]), float(R[0, 2])
+    m10, m11, m12 = float(R[1, 0]), float(R[1, 1]), float(R[1, 2])
+    m20, m21, m22 = float(R[2, 0]), float(R[2, 1]), float(R[2, 2])
+    trace = m00 + m11 + m22
+    import math as _m
+    if trace > 0.0:
+        s = 0.5 / _m.sqrt(trace + 1.0)
+        qw = 0.25 / s
+        qx = (m21 - m12) * s
+        qy = (m02 - m20) * s
+        qz = (m10 - m01) * s
+    elif m00 > m11 and m00 > m22:
+        s = 2.0 * _m.sqrt(max(1e-12, 1.0 + m00 - m11 - m22))
+        qw = (m21 - m12) / s
+        qx = 0.25 * s
+        qy = (m01 + m10) / s
+        qz = (m02 + m20) / s
+    elif m11 > m22:
+        s = 2.0 * _m.sqrt(max(1e-12, 1.0 + m11 - m00 - m22))
+        qw = (m02 - m20) / s
+        qx = (m01 + m10) / s
+        qy = 0.25 * s
+        qz = (m12 + m21) / s
+    else:
+        s = 2.0 * _m.sqrt(max(1e-12, 1.0 + m22 - m00 - m11))
+        qw = (m10 - m01) / s
+        qx = (m02 + m20) / s
+        qy = (m12 + m21) / s
+        qz = 0.25 * s
+    return qx, qy, qz, qw
+
+
+def _build_humanoid_skeleton(
+    rots: np.ndarray | None,
+    coords: np.ndarray | None,
+) -> dict[str, Any] | None:
+    """Package the humanoid bone subset (post-lean, pre-overrides) for the
+    image-tab rotation editor — see ``cs.HUMANOID_BONES`` for the current
+    set. Returns ``None`` when the forward pass didn't yield per-joint
+    rotations/coords."""
+    if rots is None or coords is None:
+        return None
+    num_joints = int(rots.shape[0])
+    bones: list[dict[str, Any]] = []
+    for name, joint_id, parent_name in cs.HUMANOID_BONES:
+        if joint_id < 0 or joint_id >= num_joints:
+            continue
+        R = rots[joint_id]
+        p = coords[joint_id]
+        qx, qy, qz, qw = _mat3_to_quat(R)
+        bones.append({
+            "name": name,
+            "joint_id": int(joint_id),
+            "parent_name": parent_name,
+            "world_position": [float(p[0]), float(p[1]), float(p[2])],
+            "world_quaternion": [qx, qy, qz, qw],
+        })
+    return {"bones": bones}
 
 
 def render_from_session(
@@ -143,8 +248,9 @@ def render_from_session(
     # hot path for slider drags that jitter between a few close values.
     faces = mhr_head.faces.detach().cpu().numpy()
     cache_key = _render_cache_key(job_id, s)
-    cached_verts = _render_cache_get(cache_key)
-    if cached_verts is not None:
+    cached = _render_cache_get(cache_key)
+    if cached is not None:
+        cached_verts, cached_skeleton = cached
         render_id = uuid.uuid4().hex[:8]
         obj_path = get_paths().tmp_dir / "mesh.obj"
         write_obj(
@@ -160,6 +266,7 @@ def render_from_session(
             obj_path=str(obj_path),
             elapsed_sec=elapsed,
             settings=s,
+            humanoid_skeleton=cached_skeleton,
         )
 
     # Pose adjust (lean correction) is applied AFTER mhr_forward by
@@ -233,13 +340,44 @@ def render_from_session(
             torso_scale=bl["torso"], neck_scale=bl["neck"],
             joint_rots_posed=rots_np,
         )
+        # Mirror the per-chain scaling onto the joint positions so the
+        # humanoid skeleton overlay sits on the deformed mesh's joints (and
+        # so the lean / rotation overrides below pivot at the right place).
+        if coords_np is not None:
+            coords_np = cs.scale_joint_coords_by_bone_length(
+                coords_np,
+                arm_scale=bl["arm"], leg_scale=bl["leg"],
+                torso_scale=bl["torso"], neck_scale=bl["neck"],
+            )
 
     # Lean correction — straighten a forward-leaning upper body by
     # rotating the spine→neck chain backward (applied last so it composes
     # on top of bone-length / blendshape adjustments).
+    parents_np = cs._FACE_BS_CACHE.get("joint_parents")
     if coords_np is not None and lean_strength > 1e-6:
         vertices = cs.apply_pose_lean_correction_mesh(
             vertices, coords_np, lean_strength,
+        )
+        # Carry the lean correction forward into the per-joint state so the
+        # humanoid skeleton returned to the frontend (and any subsequent
+        # rotation overrides applied below) sees the post-lean pose.
+        if rots_np is not None and parents_np is not None:
+            rots_np, coords_np = cs.apply_pose_lean_correction_rig(
+                rots_np, coords_np, parents_np, lean_strength,
+            )
+
+    # Snapshot humanoid skeleton AFTER lean but BEFORE rotation overrides —
+    # this is the "base" frame the frontend rotation editor uses to
+    # interpret stored local-frame Euler overrides.
+    humanoid_skeleton = _build_humanoid_skeleton(rots_np, coords_np)
+
+    # Per-bone rotation overrides (image-tab rotation editor). Applied last
+    # so lean / bone-length / blendshape layers are fully baked first.
+    rotation_overrides = s["pose_adjust"].get("rotation_overrides") or {}
+    if (coords_np is not None and rots_np is not None
+            and parents_np is not None and rotation_overrides):
+        vertices = cs.apply_pose_rotation_overrides_mesh(
+            vertices, rots_np, coords_np, parents_np, rotation_overrides,
         )
 
     # mhr_forward already produces vertices in an OpenGL-convention world
@@ -253,7 +391,7 @@ def render_from_session(
     write_obj(obj_path, vertices, faces, header=f"# sam3dbody job {job_id} render {render_id}")
     obj_url = f"/tmp/mesh.obj?v={render_id}"
 
-    _render_cache_put(cache_key, vertices)
+    _render_cache_put(cache_key, (vertices, humanoid_skeleton))
 
     elapsed = time.monotonic() - t0
     log.info("render job=%s render=%s verts=%d elapsed=%.2fs", job_id, render_id, len(vertices), elapsed)
@@ -263,4 +401,5 @@ def render_from_session(
         obj_path=str(obj_path),
         elapsed_sec=elapsed,
         settings=s,
+        humanoid_skeleton=humanoid_skeleton,
     )

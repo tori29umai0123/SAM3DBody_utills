@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 
@@ -43,6 +44,11 @@ const featureFlags = { preset_pack_admin: false, debug: false };
 
 function activateTab(name) {
   if (!TABS.includes(name)) return;
+  // Rotation editor locks the tab — silently refuse switches until the user
+  // exits. Clicks on the disabled tab buttons are already blocked by the
+  // pointer-events rule, but programmatic calls (localStorage restore etc.)
+  // can still land here.
+  if (poseEditMode) return;
   // Honor runtime feature flags: if Preset Admin is disabled in config.ini,
   // bounce away silently when someone tries to activate it.
   if (name === "admin" && !featureFlags.preset_pack_admin) {
@@ -192,6 +198,17 @@ function initViewer() {
   let meshGroup = null;
   // Framing done once per job_id to avoid camera jump on every slider edit.
   let framedJob = null;
+  // Per-job mesh fit (height-scale + center / ground offset) computed on
+  // first render and cached. Subsequent renders for the same job reuse it
+  // so IK / sliders that change the bbox don't translate the body around
+  // the viewport — the user expects the body to stay anchored.
+  let _meshFitJob = null;
+  let _meshFitScale = 1.0;
+  const _meshFitOffset = new THREE.Vector3();   // immutable fit anchor
+  // Hips drag translation, accumulated by the user. Lives separately from
+  // _meshFitOffset so "Reset all bones" can wipe it without losing the
+  // first-load centering. Final mesh position = fit anchor + hips offset.
+  const _hipsOffset = new THREE.Vector3();
   // Animation bookkeeping (used when the viewer shows an animated FBX clip
   // produced by the video pipeline).
   let mixer = null;
@@ -319,25 +336,79 @@ function initViewer() {
       }
     });
 
+    // Preserve the pose-edit overlay across mesh reloads — _disposeMesh
+    // would otherwise traverse the old meshGroup and dispose our handle /
+    // line geometries. Detach now, re-attach to the new meshGroup below.
+    const carriedPoseRoot = (poseEdit.active && poseEdit.root) ? poseEdit.root : null;
+    if (carriedPoseRoot && carriedPoseRoot.parent) {
+      carriedPoseRoot.parent.remove(carriedPoseRoot);
+    }
+
     _disposeMesh();
     meshGroup = root;
 
-    // Only re-frame when we switch to a new job; otherwise the camera stays
-    // locked so slider drags don't bounce the view around.
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3();
-    box.getSize(size);
+    // First render of this job → measure & cache the height-fit / center /
+    // ground offset. Same job re-renders → reuse cached values so IK or
+    // slider edits that change the bbox don't slide the body sideways
+    // (re-centring on every frame is what makes the body "drift" during
+    // an arm IK drag). Hips drag offset (if any) is added on top.
     const targetHeight = 1.7;
-    const scale = targetHeight / Math.max(size.y, 1e-3);
-    root.scale.setScalar(scale);
-    const centered = new THREE.Box3().setFromObject(root);
-    const center = new THREE.Vector3();
-    centered.getCenter(center);
-    root.position.x -= center.x;
-    root.position.z -= center.z;
-    root.position.y -= centered.min.y;
+    if (jobId !== _meshFitJob) {
+      const box = new THREE.Box3().setFromObject(root);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const scale = targetHeight / Math.max(size.y, 1e-3);
+      root.scale.setScalar(scale);
+      const centered = new THREE.Box3().setFromObject(root);
+      const center = new THREE.Vector3();
+      centered.getCenter(center);
+      root.position.x -= center.x;
+      root.position.z -= center.z;
+      root.position.y -= centered.min.y;
+      _meshFitJob = jobId;
+      _meshFitScale = scale;
+      _meshFitOffset.copy(root.position);
+      // New job → wipe any prior Hips translation so the new character
+      // doesn't inherit the previous body's drag offset.
+      _hipsOffset.set(0, 0, 0);
+    } else {
+      root.scale.setScalar(_meshFitScale);
+      root.position.copy(_meshFitOffset).add(_hipsOffset);
+    }
 
     scene.add(root);
+
+    // Re-attach the pose-edit overlay so it inherits the new meshGroup's
+    // height-fit + centring transforms. Bone handles also need their local
+    // scale recomputed against the new meshGroup.scale so their visible
+    // size in world units stays stable across re-renders. Finger handles
+    // keep their 1/8 ratio so they don't swell when the mesh re-fits.
+    if (carriedPoseRoot) {
+      meshGroup.add(carriedPoseRoot);
+      const meshLocalScale = Math.max(meshGroup.scale.x, 1e-6);
+      const baseWorldScale = (poseEdit.baseHandleScale || 0.03) * (poseEdit.lastMeshScale || 1.0);
+      const newHandleLocalScale = baseWorldScale / meshLocalScale;
+      poseEdit.baseHandleScale = newHandleLocalScale;
+      poseEdit.lastMeshScale = meshLocalScale;
+      for (const bone of poseEdit.bones) {
+        const perBoneScale = _isFingerBoneName(bone.name)
+          ? newHandleLocalScale * _FINGER_HANDLE_SCALE_RATIO
+          : newHandleLocalScale;
+        bone.handle.scale.setScalar(perBoneScale);
+      }
+      // Bone handle world positions just changed (mesh re-fitted to the
+      // new height). Sync the IK target to follow the selected bone so
+      // the translate gizmo doesn't end up floating in space.
+      //
+      // BUT skip when an IK drag (or Hips translate) is in flight —
+      // re-syncing mid-drag would snap the target back to the bone, then
+      // the next mouse move would jump again. The result is visible
+      // jitter, most obvious on finger bones / small drags.
+      if (poseEdit.selected && !_ikDrag.active && !_hipsDrag.active) {
+        meshGroup.updateMatrixWorld(true);
+        poseEdit.selected.handle.getWorldPosition(_ikTarget.position);
+      }
+    }
 
     if (framedJob !== jobId) {
       controls.target.set(0, targetHeight * 0.5, 0);
@@ -424,6 +495,716 @@ function initViewer() {
     _dirty = true;
   }
 
+  // -------------------------------------------------------------------
+  // Pose-edit (rotation) overlay + TransformControls.
+  //
+  // The image tab's rotation editor maintains an overlay skeleton on top
+  // of the posed mesh: one pickable sphere per humanoid bone, a line
+  // from each bone to its humanoid parent, and a rotation gizmo
+  // (TransformControls) attached to whichever sphere is selected. All
+  // state lives inside the viewer so it can reuse the Three.js scene
+  // graph / raycaster / render loop without leaking to the rest of app.js.
+  // -------------------------------------------------------------------
+  const poseEdit = {
+    active: false,
+    root: null,          // THREE.Group parented to scene while active
+    bones: [],           // [{name, jointId, parentName, handle, base:{pos,quatLocal,quatParentWorld}, parentBone, children}]
+    byName: new Map(),
+    selected: null,
+    baseHandleScale: 1.0,
+    onBoneChange: null,  // callback: (boneName, localEuler XYZ radians | null) => void
+    onBonePick:   null,  // callback: (boneName) => void
+    onDragStart:  null,
+    onDragEnd:    null,
+  };
+
+  // Finger handles are shrunk to 1/8 of the body-bone size — five fingers ×
+  // four joints per hand cluster around the palm, so a full-size sphere per
+  // joint makes them un-pickable. Test by name to avoid threading a flag
+  // through every bone record.
+  const _FINGER_HANDLE_SCALE_RATIO = 1 / 8;
+  const _FINGER_BONE_RE = /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d$/;
+  function _isFingerBoneName(name) {
+    return _FINGER_BONE_RE.test(name || "");
+  }
+
+  // Lines and handles are Euler-auto-scaled to the posed mesh's height so
+  // they stay legible on petite / tall characters.
+  const _poseLineMat  = new THREE.LineBasicMaterial({ color: 0x33aaff, transparent: true, opacity: 0.85, depthTest: false });
+  const _poseHandleMat = new THREE.MeshBasicMaterial({ color: 0x33aaff, transparent: true, opacity: 0.9, depthTest: false });
+  const _poseHandleHoverMat = new THREE.MeshBasicMaterial({ color: 0xffc84d, transparent: true, opacity: 0.95, depthTest: false });
+  const _poseHandleSelectedMat = new THREE.MeshBasicMaterial({ color: 0xff5252, transparent: true, opacity: 0.95, depthTest: false });
+  const _poseHandleGeom = new THREE.SphereGeometry(1, 12, 10);
+
+  // TransformControls in TRANSLATE mode drives the IK: the gizmo is
+  // attached to an invisible "IK target" point that the user drags; on
+  // each move we read the target's world position, run CCD on the
+  // selected bone's parent chain, and the bone follows. The bone may
+  // not actually reach the target when constraints kick in — the gap
+  // between the gizmo (target) and the bone handle is the IK error.
+  const tControls = new TransformControls(camera, canvas);
+  tControls.setMode("translate");
+  tControls.setSpace("world");
+  const _tHelper = tControls.getHelper ? tControls.getHelper() : tControls;
+  _tHelper.visible = false;
+  tControls.enabled = false;
+  scene.add(_tHelper);
+
+  // Invisible point the gizmo grabs. Lives in scene (world space) so its
+  // position field is directly usable as the IK goal after a mesh-local
+  // conversion. Re-synced to the selected bone whenever selection or
+  // drag-end happens.
+  const _ikTarget = new THREE.Object3D();
+  _ikTarget.name = "_ik_target";
+  scene.add(_ikTarget);
+
+  // Hips drag is special: it doesn't run CCD. Instead it translates the
+  // entire meshGroup (and its bone overlay child) by the gizmo delta.
+  // The user expects "moving Hips" to move the whole body in space.
+  const _HIPS_BONE_NAME = "Hips";
+  const _hipsDrag = {
+    active: false,
+    lastTargetWorld: new THREE.Vector3(),
+  };
+
+  tControls.addEventListener("dragging-changed", (ev) => {
+    controls.enabled = !ev.value;
+    if (ev.value) {
+      if (poseEdit.selected) {
+        if (poseEdit.selected.name === _HIPS_BONE_NAME) {
+          _hipsDrag.active = true;
+          _hipsDrag.lastTargetWorld.copy(_ikTarget.position);
+          if (poseEdit.onDragStart) poseEdit.onDragStart();
+        } else {
+          _ikDrag.bone = poseEdit.selected;
+          _ikDrag.chain = _buildIkChain(poseEdit.selected, _IK_MAX_CHAIN_LEN);
+          // Length >= 2 → run CCD on the chain. Length === 1 (e.g. Spine
+          // when the Hips block kicks in) → run self-rotate IK using the
+          // dragged bone's first child as the tip.
+          const chainLen = _ikDrag.chain.length;
+          const canSelfRotate = chainLen === 1
+            && _ikDrag.chain[0].children
+            && _ikDrag.chain[0].children.length > 0;
+          _ikDrag.active = (chainLen >= 2) || canSelfRotate;
+          if (_ikDrag.active && poseEdit.onDragStart) poseEdit.onDragStart();
+        }
+      }
+    } else {
+      // Drag end — snap target back to the bone's actual position so the
+      // next drag starts from the bone, not the (possibly unreachable)
+      // place the gizmo was left.
+      if (poseEdit.selected) {
+        poseEdit.selected.handle.getWorldPosition(_ikTarget.position);
+      }
+      const wasActive = _ikDrag.active || _hipsDrag.active;
+      _ikDrag.active = false;
+      _ikDrag.bone = null;
+      _ikDrag.chain = [];
+      _hipsDrag.active = false;
+      if (wasActive && poseEdit.onDragEnd) poseEdit.onDragEnd();
+    }
+  });
+
+  tControls.addEventListener("change", () => {
+    if (!poseEdit.active) { markDirty(); return; }
+    // Hips: translate the whole body. Persist the offset into the cached
+    // mesh fit so subsequent re-renders (from other settings changes) keep
+    // the translation instead of snapping back to the original origin.
+    if (_hipsDrag.active) {
+      if (meshGroup) {
+        const dx = _ikTarget.position.x - _hipsDrag.lastTargetWorld.x;
+        const dy = _ikTarget.position.y - _hipsDrag.lastTargetWorld.y;
+        const dz = _ikTarget.position.z - _hipsDrag.lastTargetWorld.z;
+        meshGroup.position.x += dx;
+        meshGroup.position.y += dy;
+        meshGroup.position.z += dz;
+        // Persist into the dedicated Hips offset (separate from the fit
+        // anchor) so re-renders preserve it AND "Reset all bones" can
+        // wipe it independently.
+        _hipsOffset.x += dx;
+        _hipsOffset.y += dy;
+        _hipsOffset.z += dz;
+      }
+      _hipsDrag.lastTargetWorld.copy(_ikTarget.position);
+      markDirty();
+      return;
+    }
+    if (!_ikDrag.active || !_ikDrag.bone) { markDirty(); return; }
+    // _ikTarget is parented to scene, so its position == world position.
+    // Convert to mesh-local before feeding CCD — the bone handles live in
+    // mesh-local coords (root → meshGroup with translation + uniform scale).
+    _ikTargetLocal.copy(_ikTarget.position);
+    if (meshGroup) {
+      _ikInvMeshMat.copy(meshGroup.matrixWorld).invert();
+      _ikTargetLocal.applyMatrix4(_ikInvMeshMat);
+    }
+    if (_ikDrag.chain.length >= 2) {
+      _runCcdIk(_ikDrag.chain, _ikTargetLocal);
+    } else {
+      _runSelfRotateIk(_ikDrag.chain[0], _ikTargetLocal);
+    }
+    // Full-body cascade from every root bone (Hips). CCD's per-iter
+    // cascade only refreshes the chain's own subtree; with multiple prior
+    // edits (e.g. Spine drag then Hand drag) the descendants outside the
+    // current chain can drift out of sync with their stored localDelta
+    // values. Re-cascading from the root guarantees every handle reflects
+    // the composition (parent.q * base.localQuat * localDelta) consistently.
+    for (const rb of poseEdit.bones) {
+      if (!rb.parentBone) _propagateBoneTransform(rb);
+    }
+    _rebuildBoneLines();
+    _emitIkChainChange(_ikDrag.chain);
+    markDirty();
+  });
+
+  // ---- raycaster-driven bone picking on click ----
+  // Click a sphere to select. Translate gizmo (TransformControls) appears
+  // on the selected bone; dragging it runs CCD IK on the parent chain.
+  const _ray = new THREE.Raycaster();
+  const _rayMouse = new THREE.Vector2();
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (!poseEdit.active || ev.button !== 0) return;
+    // Don't intercept clicks on the gizmo itself.
+    if (tControls.dragging) return;
+    const r = canvas.getBoundingClientRect();
+    _rayMouse.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+    _rayMouse.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+    _ray.setFromCamera(_rayMouse, camera);
+    const handles = poseEdit.bones.map((b) => b.handle);
+    const hits = _ray.intersectObjects(handles, false);
+    if (hits.length === 0) return;
+    const hit = hits[0].object;
+    const bone = poseEdit.bones.find((b) => b.handle === hit);
+    if (!bone) return;
+    ev.preventDefault();
+    selectPoseBone(bone.name);
+    if (poseEdit.onBonePick) poseEdit.onBonePick(bone.name);
+  });
+
+  function _quatMul(q1, q2) {
+    // three.js Quaternion.multiply: this = this * q  (left-to-right).
+    return q1.clone().multiply(q2);
+  }
+
+  function _propagateBoneTransform(bone) {
+    // Recompute world transforms of descendants after ``bone`` moved. Each
+    // descendant's world q is (parent world q) * (base localQuat) * (own
+    // localDelta) — the localDelta term preserves that bone's own stored
+    // rotation when an ancestor was the one that moved.
+    const queue = [...bone.children];
+    while (queue.length) {
+      const c = queue.shift();
+      const pWorldQ = c.parentBone.handle.quaternion;
+      const pWorldPos = c.parentBone.handle.position;
+      const lp = c.base.localPos.clone().applyQuaternion(pWorldQ);
+      c.handle.position.copy(pWorldPos).add(lp);
+      c.handle.quaternion.copy(pWorldQ).multiply(c.base.localQuat).multiply(c.localDelta);
+      queue.push(...c.children);
+    }
+  }
+
+  function _rebuildBoneLines() {
+    if (!poseEdit.root) return;
+    const linesGroup = poseEdit.root.getObjectByName("_bone_lines");
+    if (!linesGroup) return;
+    while (linesGroup.children.length) {
+      const child = linesGroup.children[0];
+      linesGroup.remove(child);
+      child.geometry?.dispose?.();
+    }
+    for (const bone of poseEdit.bones) {
+      if (!bone.parentBone) continue;
+      const a = bone.parentBone.handle.position;
+      const b = bone.handle.position;
+      const g = new THREE.BufferGeometry().setFromPoints([a.clone(), b.clone()]);
+      const line = new THREE.Line(g, _poseLineMat);
+      line.renderOrder = 998;
+      linesGroup.add(line);
+    }
+  }
+
+  function _parentPropagatedWorldQuat(bone) {
+    // The bone's world quaternion induced purely by ancestor-override
+    // propagation — i.e. where the bone's frame would be if its own
+    // override were identity. Backend semantics: apply overrides in
+    // topological order, each override is a local delta multiplied into
+    // the bone's CURRENT world rotation (post-ancestor-overrides).
+    if (!bone.parentBone) {
+      return bone.base.worldQuat.clone();
+    }
+    return bone.parentBone.handle.quaternion.clone().multiply(bone.base.localQuat);
+  }
+
+  function _emitLocalEulerForSelected() {
+    if (!poseEdit.selected || !poseEdit.onBoneChange) return;
+    const bone = poseEdit.selected;
+    // TransformControls drags modified bone.handle.quaternion directly.
+    // Extract the local delta and stash it on the bone so subsequent
+    // ancestor-propagation doesn't lose this edit.
+    const parentPropQ = _parentPropagatedWorldQuat(bone);
+    const localDeltaQ = parentPropQ.clone().invert().multiply(bone.handle.quaternion);
+    bone.localDelta.copy(localDeltaQ);
+    const e = new THREE.Euler().setFromQuaternion(localDeltaQ, "XYZ");
+    const eps = 1e-6;
+    if (Math.abs(e.x) < eps && Math.abs(e.y) < eps && Math.abs(e.z) < eps) {
+      poseEdit.onBoneChange(bone.name, null);
+    } else {
+      poseEdit.onBoneChange(bone.name, [e.x, e.y, e.z]);
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // IK drag — drag the selected (red) handle to translate the end
+  // effector; CCD rotates a short chain of parent bones to follow. Each
+  // affected bone's rotation_overrides entry is written via the
+  // onIkChainChange callback; triggerRender() (called by the outer
+  // controller in that callback) gives a live mesh preview, just like
+  // the rotate gizmo path.
+  // -------------------------------------------------------------------
+  const _IK_MAX_CHAIN_LEN = 3;     // end effector + 2 parents (classic 2-bone IK)
+  const _IK_ITERATIONS = 12;
+  const _IK_ANGLE_TOLERANCE = 0.001;
+  // ``DAMPING`` blends the target rotation per step (1.0 = full snap, 0.5
+  // = half each iter). Lower values converge slower but more smoothly and
+  // avoid IK flips on fast drags. We deliberately don't impose per-step
+  // caps or magnitude clamps — empirically the user's natural drag motion
+  // + damping is enough, and clamps caused subtle frame-of-reference bugs
+  // when ancestor IK had already rotated the bone's local frame.
+  const _IK_DAMPING = 0.5;
+  const _ikDrag = {
+    active: false,
+    bone: null,
+    chain: [],
+  };
+
+  // Bones that act as IK ceilings: the chain may include them but never
+  // their parents. Stops shoulder / spine / hips from rotating when the
+  // user IK-drags a hand or foot — the upper arm and thigh are treated
+  // as anchored to the torso for IK on descendants.
+  //
+  // Exception: when the user drags the ceiling bone ITSELF (it lands at
+  // chain[0] = end effector), the ceiling is released and the chain is
+  // free to extend up. So dragging the upper arm rotates shoulder + spine,
+  // and dragging the thigh rotates the hips — necessary because those
+  // bones can't move at all without their parents pivoting.
+  const _IK_CEILING_BONES = new Set([
+    "LeftArm", "RightArm",
+    "LeftUpLeg", "RightUpLeg",
+  ]);
+
+  // Walk up from `bone` to determine which side of the body it belongs to.
+  // Returns true if `bone` (or any ancestor) is "Spine" before reaching
+  // "Hips". Used so spine / arm IK can be blocked from propagating into
+  // Hips (which would drag the legs along), while leg IK is still allowed
+  // to rotate Hips when the user explicitly drags a thigh.
+  function _isSpineSideBone(bone) {
+    let cur = bone;
+    while (cur) {
+      if (cur.name === "Spine") return true;
+      if (cur.name === "Hips") return false;
+      cur = cur.parentBone;
+    }
+    return false;
+  }
+
+  function _buildIkChain(endBone, maxLen) {
+    const chain = [];
+    let cur = endBone;
+    const spineSide = _isSpineSideBone(endBone);
+    while (cur && chain.length < maxLen) {
+      chain.push(cur);
+      // Ceiling: stop AFTER adding (current bone added, no further extension).
+      // Skipped on chain.length === 1 so dragging the ceiling bone itself
+      // releases the ceiling.
+      if (chain.length > 1 && _IK_CEILING_BONES.has(cur.name)) break;
+      // Hips block (spine-side only): stop BEFORE adding Hips so torso /
+      // arm IK never spins the lower body. Leg IK is unaffected — leg-side
+      // chains may still propagate to Hips and rotate it.
+      if (spineSide && cur.parentBone && cur.parentBone.name === "Hips") break;
+      cur = cur.parentBone;
+    }
+    return chain;
+  }
+
+  // Hinge bones (knees, elbows) should never hyperextend. We check the
+  // WORLD-frame x-component of the candidate rotation, which encodes the
+  // sign of the bend around the lateral X axis (assumes body roughly
+  // faces +Z at rest):
+  //   - knee natural bend: calf folds BEHIND body → +X rotation. Hyper­
+  //     extension is -X. So map["LeftLeg"] = +1 means "+X is natural".
+  //   - elbow natural bend: forearm folds FORWARD (hand toward face) →
+  //     -X rotation. Hyperextension is +X. So map["LeftForeArm"] = -1.
+  // When CCD's candidate rotation has the WRONG sign on world.x, we drop
+  // localDelta back to identity so the joint stays straight rather than
+  // flipping the wrong way.
+  const _IK_HINGE_NATURAL_X = {
+    "LeftLeg":      +1,
+    "RightLeg":     +1,
+    "LeftForeArm":  -1,
+    "RightForeArm": -1,
+  };
+
+  const _ikHingeTmpInv = new THREE.Quaternion();
+  const _ikHingeTmpWorld = new THREE.Quaternion();
+  function _enforceHingeNoHyperextend(localDelta, parentPropQ, naturalSign) {
+    // worldDelta = parentPropQ × localDelta × parentPropQ^-1 — the rotation
+    // that this bone applies in WORLD frame at its pivot.
+    _ikHingeTmpInv.copy(parentPropQ).invert();
+    _ikHingeTmpWorld.copy(parentPropQ).multiply(localDelta).multiply(_ikHingeTmpInv);
+    if (_ikHingeTmpWorld.x * naturalSign < 0) {
+      localDelta.set(0, 0, 0, 1);
+    }
+  }
+
+  // Run CCD in mesh-local space (== world-aligned, since meshGroup applies
+  // only translation + uniform scale). All handle.position / quaternion
+  // values live in this space directly.
+  const _ikTmpV1 = new THREE.Vector3();
+  const _ikTmpV2 = new THREE.Vector3();
+  const _ikTmpAxis = new THREE.Vector3();
+  const _ikTmpDq = new THREE.Quaternion();
+  const _ikTmpNewQ = new THREE.Quaternion();
+  function _runCcdIk(chain, targetMeshLocal) {
+    if (chain.length < 2) return;
+    const endBone = chain[0];
+    for (let iter = 0; iter < _IK_ITERATIONS; iter++) {
+      let maxAngle = 0;
+      for (let i = 1; i < chain.length; i++) {
+        const joint = chain[i];
+        _ikTmpV1.copy(endBone.handle.position).sub(joint.handle.position);
+        _ikTmpV2.copy(targetMeshLocal).sub(joint.handle.position);
+        if (_ikTmpV1.lengthSq() < 1e-10 || _ikTmpV2.lengthSq() < 1e-10) continue;
+        _ikTmpV1.normalize();
+        _ikTmpV2.normalize();
+        const dot = Math.max(-1, Math.min(1, _ikTmpV1.dot(_ikTmpV2)));
+        let angle = Math.acos(dot);
+        if (angle < _IK_ANGLE_TOLERANCE) continue;
+        angle = angle * _IK_DAMPING;
+        _ikTmpAxis.crossVectors(_ikTmpV1, _ikTmpV2);
+        if (_ikTmpAxis.lengthSq() < 1e-12) continue;
+        _ikTmpAxis.normalize();
+        _ikTmpDq.setFromAxisAngle(_ikTmpAxis, angle);
+        _ikTmpNewQ.copy(_ikTmpDq).multiply(joint.handle.quaternion);
+        // Re-derive joint.localDelta from the candidate world quaternion.
+        // Backend semantics: each override is a local-frame Euler applied
+        // in the bone's posed frame (after ancestor overrides), so we go
+        // through the parent-propagated quaternion as the rest reference.
+        const parentPropQ = _parentPropagatedWorldQuat(joint);
+        const parentPropQInv = parentPropQ.clone().invert();
+        joint.localDelta.copy(parentPropQInv).multiply(_ikTmpNewQ);
+        // Hinge constraint: prevent knee/elbow hyperextension by snapping
+        // any wrong-direction rotation back to identity.
+        const hingeSign = _IK_HINGE_NATURAL_X[joint.name];
+        if (hingeSign !== undefined) {
+          _enforceHingeNoHyperextend(joint.localDelta, parentPropQ, hingeSign);
+        }
+        joint.handle.quaternion.copy(parentPropQ).multiply(joint.localDelta);
+        _propagateBoneTransform(joint);
+        if (angle > maxAngle) maxAngle = angle;
+      }
+      if (maxAngle < _IK_ANGLE_TOLERANCE) break;
+    }
+  }
+
+  // Single-bone "self-rotate" IK — used when the chain collapses to just
+  // the dragged bone (e.g. dragging Spine, where the Hips block keeps the
+  // chain from extending up). We rotate the bone itself so its primary
+  // child swings toward the target. The bone's own joint position is
+  // anchored at its parent (Hips for Spine), so this lets the user bend
+  // the torso without dragging the lower body along.
+  function _runSelfRotateIk(bone, targetMeshLocal) {
+    if (!bone.children || bone.children.length === 0) return;
+    const tip = bone.children[0];
+    for (let iter = 0; iter < _IK_ITERATIONS; iter++) {
+      _ikTmpV1.copy(tip.handle.position).sub(bone.handle.position);
+      _ikTmpV2.copy(targetMeshLocal).sub(bone.handle.position);
+      if (_ikTmpV1.lengthSq() < 1e-10 || _ikTmpV2.lengthSq() < 1e-10) break;
+      _ikTmpV1.normalize();
+      _ikTmpV2.normalize();
+      const dot = Math.max(-1, Math.min(1, _ikTmpV1.dot(_ikTmpV2)));
+      let angle = Math.acos(dot);
+      if (angle < _IK_ANGLE_TOLERANCE) break;
+      angle = angle * _IK_DAMPING;
+      _ikTmpAxis.crossVectors(_ikTmpV1, _ikTmpV2);
+      if (_ikTmpAxis.lengthSq() < 1e-12) break;
+      _ikTmpAxis.normalize();
+      _ikTmpDq.setFromAxisAngle(_ikTmpAxis, angle);
+      _ikTmpNewQ.copy(_ikTmpDq).multiply(bone.handle.quaternion);
+      const parentPropQ = _parentPropagatedWorldQuat(bone);
+      const parentPropQInv = parentPropQ.clone().invert();
+      bone.localDelta.copy(parentPropQInv).multiply(_ikTmpNewQ);
+      bone.handle.quaternion.copy(parentPropQ).multiply(bone.localDelta);
+      _propagateBoneTransform(bone);
+    }
+  }
+
+  function _emitIkChainChange(chain) {
+    if (!poseEdit.onIkChainChange) return;
+    const eps = 1e-6;
+    const changes = [];
+    // For multi-bone chains, the end effector (chain[0]) isn't rotated by
+    // CCD — only chain[1..N-1] are. For length-1 chains the dragged bone
+    // IS the rotated joint (self-rotate path), so include it.
+    const startIdx = chain.length === 1 ? 0 : 1;
+    for (let i = startIdx; i < chain.length; i++) {
+      const joint = chain[i];
+      const e = new THREE.Euler().setFromQuaternion(joint.localDelta, "XYZ");
+      const isIdent = Math.abs(e.x) < eps && Math.abs(e.y) < eps && Math.abs(e.z) < eps;
+      changes.push({
+        boneName: joint.name,
+        eulerRad: isIdent ? null : [e.x, e.y, e.z],
+      });
+    }
+    poseEdit.onIkChainChange(changes);
+  }
+
+  // Reusable temporaries for the TC-change handler's CCD math.
+  const _ikTargetLocal = new THREE.Vector3();
+  const _ikInvMeshMat = new THREE.Matrix4();
+
+  // Public API ------------------------------------------------------------
+
+  function enterPoseEdit(skeleton, storedOverrides) {
+    if (poseEdit.active) return;
+    if (!skeleton || !Array.isArray(skeleton.bones)) return;
+
+    // Pick a handle radius roughly proportional to the rendered mesh height
+    // so the spheres are legible but don't swamp the character. Computed
+    // against the world-space bbox so the visible size is right regardless
+    // of meshGroup's local scale; we then divide by meshGroup.scale before
+    // assigning so handle.scale (a LOCAL value once parented to meshGroup)
+    // produces the intended world size.
+    let scale = 0.03;
+    if (meshGroup) {
+      const box = new THREE.Box3().setFromObject(meshGroup);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      scale = Math.max(0.015, Math.min(0.06, size.y * 0.022));
+    }
+    const meshLocalScale = meshGroup ? Math.max(meshGroup.scale.x, 1e-6) : 1.0;
+    const handleLocalScale = scale / meshLocalScale;
+    poseEdit.baseHandleScale = handleLocalScale;
+    poseEdit.lastMeshScale = meshLocalScale;
+
+    const root = new THREE.Group();
+    root.name = "_pose_edit_root";
+    root.renderOrder = 999;
+    // Parent the overlay to meshGroup so it inherits the height-fit + XZ
+    // centring + ground-snap transforms applied to the mesh in loadObj —
+    // bones come from the server in raw MHR units (~1m total height), the
+    // mesh is rescaled to a fixed 1.7 world units, so without this the
+    // skeleton sits at the wrong scale + offset relative to the body.
+    (meshGroup || scene).add(root);
+    const linesGroup = new THREE.Group();
+    linesGroup.name = "_bone_lines";
+    root.add(linesGroup);
+
+    // Build bones, first pass: create handles at world positions.
+    poseEdit.bones = [];
+    poseEdit.byName = new Map();
+    for (const b of skeleton.bones) {
+      const handle = new THREE.Mesh(_poseHandleGeom, _poseHandleMat);
+      const perBoneScale = _isFingerBoneName(b.name)
+        ? handleLocalScale * _FINGER_HANDLE_SCALE_RATIO
+        : handleLocalScale;
+      handle.scale.setScalar(perBoneScale);
+      handle.renderOrder = 1000;
+      handle.position.fromArray(b.world_position);
+      handle.quaternion.set(
+        b.world_quaternion[0], b.world_quaternion[1],
+        b.world_quaternion[2], b.world_quaternion[3],
+      );
+      handle.name = `_pose_bone_${b.name}`;
+      root.add(handle);
+
+      const bone = {
+        name: b.name,
+        jointId: b.joint_id,
+        parentName: b.parent_name,
+        handle,
+        base: {
+          worldPos: handle.position.clone(),
+          worldQuat: handle.quaternion.clone(),
+          localPos: new THREE.Vector3(),  // filled below
+          localQuat: new THREE.Quaternion(),
+        },
+        // Bone's own local-frame delta (identity = no override). Kept in
+        // sync with settings.pose_adjust.rotation_overrides[joint_id] by
+        // the outer controller, and consumed during propagation so
+        // ancestor rotations don't wipe out this bone's own edits.
+        localDelta: new THREE.Quaternion(),
+        parentBone: null,
+        children: [],
+      };
+      poseEdit.bones.push(bone);
+      poseEdit.byName.set(b.name, bone);
+    }
+
+    // Second pass: resolve parents + compute base local transforms.
+    for (const bone of poseEdit.bones) {
+      if (bone.parentName && poseEdit.byName.has(bone.parentName)) {
+        const parent = poseEdit.byName.get(bone.parentName);
+        bone.parentBone = parent;
+        parent.children.push(bone);
+        const pQ = parent.base.worldQuat.clone().invert();
+        const dp = bone.base.worldPos.clone().sub(parent.base.worldPos);
+        bone.base.localPos.copy(dp).applyQuaternion(pQ);
+        bone.base.localQuat.copy(pQ).multiply(bone.base.worldQuat);
+      } else {
+        bone.base.localPos.copy(bone.base.worldPos);
+        bone.base.localQuat.copy(bone.base.worldQuat);
+      }
+    }
+
+    // Re-apply stored overrides so re-entering the editor doesn't drop the
+    // user's prior edits. Applied in topological order (iteration order of
+    // skeleton.bones is ancestor→descendant from the backend).
+    if (storedOverrides) {
+      for (const bone of poseEdit.bones) {
+        const ov = storedOverrides[String(bone.jointId)];
+        if (!ov || ov.length !== 3) continue;
+        const e = new THREE.Euler(ov[0], ov[1], ov[2], "XYZ");
+        bone.localDelta.setFromEuler(e);
+        // Parent-propagated world quat reflects ancestors' already-applied
+        // overrides; multiplying localDelta in on the right = local-frame
+        // rotation relative to that propagated base (matches backend).
+        const parentPropQ = _parentPropagatedWorldQuat(bone);
+        bone.handle.quaternion.copy(parentPropQ).multiply(bone.localDelta);
+        _propagateBoneTransform(bone);
+      }
+    }
+
+    poseEdit.root = root;
+    _rebuildBoneLines();
+    // Translate gizmo enabled (rotate is intentionally not used — fine
+    // rotation is via the X/Y/Z sliders). Gizmo is attached on selection
+    // to the invisible IK target, which the user drags to translate the
+    // selected bone via CCD on the parent chain.
+    tControls.enabled = true;
+    _tHelper.visible = false;   // shown on selection
+    poseEdit.active = true;
+    markDirty();
+  }
+
+  function exitPoseEdit() {
+    if (!poseEdit.active) return;
+    tControls.detach();
+    tControls.enabled = false;
+    _tHelper.visible = false;
+    if (poseEdit.root) {
+      scene.remove(poseEdit.root);
+      poseEdit.root.traverse?.((o) => {
+        if (o.isMesh || o.isLine) o.geometry?.dispose?.();
+      });
+      poseEdit.root = null;
+    }
+    poseEdit.bones = [];
+    poseEdit.byName = new Map();
+    poseEdit.selected = null;
+    poseEdit.active = false;
+    markDirty();
+  }
+
+  function selectPoseBone(name) {
+    if (!poseEdit.active) return;
+    for (const b of poseEdit.bones) {
+      b.handle.material = _poseHandleMat;
+    }
+    const bone = name ? poseEdit.byName.get(name) : null;
+    if (!bone) {
+      poseEdit.selected = null;
+      tControls.detach();
+      _tHelper.visible = false;
+      markDirty();
+      return;
+    }
+    bone.handle.material = _poseHandleSelectedMat;
+    poseEdit.selected = bone;
+    // Position the IK target at the bone's world location and attach the
+    // translate gizmo to it. Bones with no parent (Hips) can still be
+    // selected for inspection but won't drive IK (chain length < 2).
+    bone.handle.getWorldPosition(_ikTarget.position);
+    tControls.attach(_ikTarget);
+    // Shrink the gizmo when a finger is selected — finger bones are tiny
+    // (a phalanx is ~5 mm in mesh-local units), so a default-size gizmo
+    // would overshoot finger reach by an order of magnitude on every drag.
+    tControls.size = _isFingerBoneName(bone.name) ? 0.35 : 1.0;
+    _tHelper.visible = true;
+    markDirty();
+  }
+
+  function resetPoseBone(name) {
+    const bone = poseEdit.byName.get(name);
+    if (!bone) return;
+    bone.localDelta.identity();
+    // Snap bone back to parent-propagated state (localDelta = identity now).
+    if (bone.parentBone) {
+      const pQ = bone.parentBone.handle.quaternion;
+      const pP = bone.parentBone.handle.position;
+      const lp = bone.base.localPos.clone().applyQuaternion(pQ);
+      bone.handle.position.copy(pP).add(lp);
+      bone.handle.quaternion.copy(pQ).multiply(bone.base.localQuat);
+    } else {
+      bone.handle.position.copy(bone.base.worldPos);
+      bone.handle.quaternion.copy(bone.base.worldQuat);
+    }
+    _propagateBoneTransform(bone);
+    _rebuildBoneLines();
+    if (poseEdit.onBoneChange) poseEdit.onBoneChange(bone.name, null);
+    markDirty();
+  }
+
+  function resetAllPoseBones() {
+    for (const bone of poseEdit.bones) {
+      bone.localDelta.identity();
+      bone.handle.position.copy(bone.base.worldPos);
+      bone.handle.quaternion.copy(bone.base.worldQuat);
+      if (poseEdit.onBoneChange) poseEdit.onBoneChange(bone.name, null);
+    }
+    // Wipe the Hips drag translation too — Reset = full restore to the
+    // initial fit pose. Snap the meshGroup back to the fit anchor.
+    _hipsOffset.set(0, 0, 0);
+    if (meshGroup) {
+      meshGroup.position.copy(_meshFitOffset);
+    }
+    // Re-sync the IK gizmo target to the (now-restored) selected bone so
+    // it doesn't dangle at the pre-reset world position.
+    if (poseEdit.selected && meshGroup) {
+      meshGroup.updateMatrixWorld(true);
+      poseEdit.selected.handle.getWorldPosition(_ikTarget.position);
+    }
+    _rebuildBoneLines();
+    markDirty();
+  }
+
+  function setPoseBoneLocalEuler(name, rx, ry, rz) {
+    const bone = poseEdit.byName.get(name);
+    if (!bone) return;
+    const e = new THREE.Euler(rx, ry, rz, "XYZ");
+    bone.localDelta.setFromEuler(e);
+    // "Absolute" semantics: bone.handle.quaternion = parentPropagated * localDelta.
+    const parentPropQ = _parentPropagatedWorldQuat(bone);
+    bone.handle.quaternion.copy(parentPropQ).multiply(bone.localDelta);
+    _propagateBoneTransform(bone);
+    _rebuildBoneLines();
+    markDirty();
+  }
+
+  function getPoseBoneLocalEuler(name) {
+    const bone = poseEdit.byName.get(name);
+    if (!bone) return null;
+    const e = new THREE.Euler().setFromQuaternion(bone.localDelta, "XYZ");
+    return [e.x, e.y, e.z];
+  }
+
+  function setPoseEditCallbacks({ onBoneChange, onBonePick, onDragStart, onDragEnd, onIkChainChange }) {
+    poseEdit.onBoneChange    = onBoneChange    || null;
+    poseEdit.onBonePick      = onBonePick      || null;
+    poseEdit.onDragStart     = onDragStart     || null;
+    poseEdit.onDragEnd       = onDragEnd       || null;
+    poseEdit.onIkChainChange = onIkChainChange || null;
+  }
+
   function savePng(filename) {
     // Swap to a white background and hide the ground grid for the capture,
     // then restore both so the on-screen view isn't disturbed. Using
@@ -451,7 +1232,35 @@ function initViewer() {
     }
   }
 
-  return { loadObj, loadFbxAnimated, savePng, switchTab, hasCachedMesh, clearMesh };
+  // Wipe the Hips drag translation and snap meshGroup back to the fit
+  // anchor. Used by the outer code when a fresh pose is estimated and
+  // any prior body translation should be discarded.
+  function clearHipsTranslation() {
+    _hipsOffset.set(0, 0, 0);
+    if (meshGroup) meshGroup.position.copy(_meshFitOffset);
+    markDirty();
+  }
+
+  // Read / write the current Hips translation. Used by the pose-edit UI
+  // so it can snapshot Hips state at session start (for Reset All to
+  // restore) without leaking _hipsOffset directly.
+  function getHipsOffset() {
+    return _hipsOffset.clone();
+  }
+  function setHipsOffset(vec3) {
+    _hipsOffset.copy(vec3);
+    if (meshGroup) meshGroup.position.copy(_meshFitOffset).add(_hipsOffset);
+    markDirty();
+  }
+
+  return {
+    loadObj, loadFbxAnimated, savePng, switchTab, hasCachedMesh, clearMesh,
+    enterPoseEdit, exitPoseEdit, selectPoseBone, resetPoseBone,
+    resetAllPoseBones, setPoseBoneLocalEuler, getPoseBoneLocalEuler,
+    setPoseEditCallbacks, clearHipsTranslation,
+    getHipsOffset, setHipsOffset,
+    isPoseEditActive: () => poseEdit.active,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +1457,433 @@ function initLeanSliders() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pose-edit (rotation) mode — image tab only.
+//
+// Flow:
+//   • Toggle button enters the mode → we lock the tab bar / file drop /
+//     preset panel / lean slider, reveal the rotation panel, and ask the
+//     viewer to build its bone overlay from the latest humanoid_skeleton
+//     snapshot (captured on every /api/render response).
+//   • TransformControls drags update `settings.pose_adjust.rotation_overrides`
+//     live; only the skeleton overlay moves during a drag (no backend
+//     roundtrip). On mouseup, scheduleRender() kicks a fresh render so the
+//     mesh catches up.
+//   • Export FBX/BVH remain available; while a Blender subprocess runs, we
+//     additionally drop a `body.ui-export-busy` flag that greys out the
+//     rotation UI too — per spec, "生成中は rotation UI も一時ロック".
+//   • Exiting the mode keeps the override values in settings, so the next
+//     render / FBX export still carries them ("終了時の挙動: 保持").
+// ---------------------------------------------------------------------------
+
+let poseEditMode = false;
+const POSE_DEG2RAD = Math.PI / 180;
+const POSE_RAD2DEG = 180 / Math.PI;
+
+function _poseLockSidebar(lock) {
+  document.body.classList.toggle("pose-edit-mode", lock);
+  // Tab nav: disable the inactive ones so keyboard / programmatic clicks
+  // can't sneak past the CSS pointer-events block either.
+  document.querySelectorAll(".tab-nav button[data-tab]").forEach((b) => {
+    if (!b.classList.contains("active")) b.disabled = lock;
+  });
+  // Explicit form-control disabling (CSS handles the visual gray-out for
+  // container elements with [data-pose-lock]; form controls still need
+  // disabled=true so Tab-key navigation / keyboard input can't reach them).
+  const toDisable = [
+    "file-input", "run-btn",
+    "preset-select", "load-preset-btn",
+    "char-json-input",
+    "img-lean-range", "img-lean-num",
+  ];
+  for (const id of toDisable) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = lock;
+  }
+}
+
+function _poseLockForExport(busy) {
+  document.body.classList.toggle("ui-export-busy", busy);
+}
+
+function _syncRotationSlidersFromBone(boneName) {
+  const xr = document.getElementById("pose-rot-x-range");
+  const yr = document.getElementById("pose-rot-y-range");
+  const zr = document.getElementById("pose-rot-z-range");
+  const xn = document.getElementById("pose-rot-x-num");
+  const yn = document.getElementById("pose-rot-y-num");
+  const zn = document.getElementById("pose-rot-z-num");
+  if (!xr || !yr || !zr) return;
+  const euler = boneName ? viewer.getPoseBoneLocalEuler(boneName) : null;
+  const deg = euler ? euler.map((v) => Number((v * POSE_RAD2DEG).toFixed(2))) : [0, 0, 0];
+  xr.value = String(deg[0]); xn.value = String(deg[0]);
+  yr.value = String(deg[1]); yn.value = String(deg[1]);
+  zr.value = String(deg[2]); zn.value = String(deg[2]);
+  const dis = !boneName;
+  xr.disabled = yr.disabled = zr.disabled = dis;
+  xn.disabled = yn.disabled = zn.disabled = dis;
+  const resetBoneBtn = document.getElementById("pose-reset-bone-btn");
+  if (resetBoneBtn) resetBoneBtn.disabled = dis;
+}
+
+function _rebuildBoneDropdown(skeleton) {
+  const sel = document.getElementById("pose-bone-select");
+  if (!sel) return;
+  sel.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = window.i18n?.t("pose.selected_bone") || "(bone)";
+  sel.appendChild(placeholder);
+  for (const b of (skeleton?.bones || [])) {
+    const opt = document.createElement("option");
+    opt.value = b.name;
+    const label = window.i18n?.t(`pose.bone.${b.name}`);
+    opt.textContent = (label && label !== `pose.bone.${b.name}`) ? label : b.name;
+    sel.appendChild(opt);
+  }
+  sel.value = "";
+}
+
+function _writeOverride(boneName, eulerRad) {
+  const bone = (tabHumanoidSkeleton.image?.bones || []).find((b) => b.name === boneName);
+  if (!bone) return;
+  const key = String(bone.joint_id);
+  if (!settings.pose_adjust) settings.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+  if (!settings.pose_adjust.rotation_overrides) settings.pose_adjust.rotation_overrides = {};
+  if (!eulerRad) {
+    delete settings.pose_adjust.rotation_overrides[key];
+  } else {
+    settings.pose_adjust.rotation_overrides[key] = [
+      Number(eulerRad[0]), Number(eulerRad[1]), Number(eulerRad[2]),
+    ];
+  }
+}
+
+function initPoseEditUi() {
+  const toggleBtn = document.getElementById("pose-edit-toggle-btn");
+  const panel     = document.getElementById("pose-edit-panel");
+  const boneSel   = document.getElementById("pose-bone-select");
+  const resetBone = document.getElementById("pose-reset-bone-btn");
+  const resetAll  = document.getElementById("pose-reset-all-btn");
+  if (!toggleBtn || !panel) return;
+
+  // Snapshot of pose-adjust state at the START of the current pose-edit
+  // session. "Reset all bones" / "Reset bone" restore to THIS, not to a
+  // pristine T-pose — so a user who made changes in a previous session,
+  // closed pose-edit, then re-opened and clicked Reset doesn't lose the
+  // prior session's adjustments.
+  let _sessionBaseline = null;
+
+  // Undo / redo stacks for pose-adjust operations. One entry per drag
+  // (D&D from gizmo press to release) or single-shot edit (slider, reset).
+  // Each entry is a complete snapshot of {rotation_overrides, hipsOffset}
+  // — small enough that storing many is fine.
+  const _UNDO_MAX = 50;
+  const _undoStack = [];
+  const _redoStack = [];
+  let _pendingUndoSnap = null;   // captured at op start, pushed at op end
+  const undoBtn = document.getElementById("pose-undo-btn");
+  const redoBtn = document.getElementById("pose-redo-btn");
+
+  function _snapshotPoseState() {
+    const overrides = settings.pose_adjust?.rotation_overrides || {};
+    return {
+      rotationOverrides: Object.fromEntries(
+        Object.entries(overrides).map(([k, v]) => [k, [v[0], v[1], v[2]]]),
+      ),
+      hipsOffset: viewer.getHipsOffset(),
+    };
+  }
+
+  function _applyPoseState(snap) {
+    if (!settings.pose_adjust) settings.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+    settings.pose_adjust.rotation_overrides = Object.fromEntries(
+      Object.entries(snap.rotationOverrides).map(([k, v]) => [k, [v[0], v[1], v[2]]]),
+    );
+    viewer.setHipsOffset(snap.hipsOffset);
+    if (viewer.isPoseEditActive()) {
+      _rebuildOverlay(settings.pose_adjust.rotation_overrides);
+    }
+    _syncRotationSlidersFromBone(boneSel.value || "");
+    scheduleRender();
+  }
+
+  function _refreshUndoButtons() {
+    if (undoBtn) undoBtn.disabled = _undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = _redoStack.length === 0;
+  }
+
+  function _pushUndoEntry(snap) {
+    _undoStack.push(snap);
+    if (_undoStack.length > _UNDO_MAX) _undoStack.shift();
+    _redoStack.length = 0;
+    _refreshUndoButtons();
+  }
+
+  // Capture the current state — call at the START of an op.
+  function _beginPoseOp() {
+    _pendingUndoSnap = _snapshotPoseState();
+  }
+  // Commit the captured snapshot to the undo stack — call at op END.
+  function _commitPoseOp() {
+    if (_pendingUndoSnap) {
+      _pushUndoEntry(_pendingUndoSnap);
+      _pendingUndoSnap = null;
+    }
+  }
+
+  function _undoPoseEdit() {
+    if (_undoStack.length === 0) return;
+    _redoStack.push(_snapshotPoseState());
+    const snap = _undoStack.pop();
+    _applyPoseState(snap);
+    _refreshUndoButtons();
+  }
+  function _redoPoseEdit() {
+    if (_redoStack.length === 0) return;
+    _undoStack.push(_snapshotPoseState());
+    const snap = _redoStack.pop();
+    _applyPoseState(snap);
+    _refreshUndoButtons();
+  }
+
+  // Keyboard shortcuts — only active inside pose-edit mode so they don't
+  // hijack browser undo elsewhere.
+  window.addEventListener("keydown", (ev) => {
+    if (!poseEditMode) return;
+    if (!ev.ctrlKey && !ev.metaKey) return;
+    const k = ev.key.toLowerCase();
+    if (k === "z" && !ev.shiftKey) {
+      ev.preventDefault();
+      _undoPoseEdit();
+    } else if (k === "y" || (k === "z" && ev.shiftKey)) {
+      ev.preventDefault();
+      _redoPoseEdit();
+    }
+  });
+
+  // Tear down + rebuild the overlay with the given override map. Used
+  // after an IK drag ends (clear cascade drift) and after Reset All
+  // (snap back to baseline). Selection is preserved.
+  function _rebuildOverlay(overrides) {
+    if (!viewer.isPoseEditActive()) return;
+    const skel = tabHumanoidSkeleton.image;
+    if (!skel) return;
+    const previousSelected = boneSel.value || null;
+    viewer.exitPoseEdit();
+    viewer.enterPoseEdit(skel, overrides || {});
+    if (previousSelected) viewer.selectPoseBone(previousSelected);
+  }
+
+  function enter() {
+    // Need a base skeleton. If /api/render hasn't completed yet, nudge.
+    const skel = tabHumanoidSkeleton.image;
+    if (!skel || !skel.bones || skel.bones.length === 0) {
+      runInfo.textContent = window.i18n?.t("pose.edit_locked") || "skeleton not ready yet";
+      return;
+    }
+    // Seed overrides dict so the viewer restores prior edits on re-enter.
+    if (!settings.pose_adjust) settings.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+    const stored = settings.pose_adjust.rotation_overrides || {};
+    // Snapshot the pose-adjust state as the Reset baseline for THIS
+    // session. Deep-copy each Euler triple so further edits don't mutate
+    // the snapshot.
+    _sessionBaseline = {
+      rotationOverrides: Object.fromEntries(
+        Object.entries(stored).map(([k, v]) => [k, [v[0], v[1], v[2]]]),
+      ),
+      hipsOffset: viewer.getHipsOffset(),
+    };
+
+    viewer.setPoseEditCallbacks({
+      onBoneChange: (boneName, eulerRad) => {
+        _writeOverride(boneName, eulerRad);
+        _syncRotationSlidersFromBone(boneName);
+        // Live mesh preview during drag. ``triggerRender`` short-circuits
+        // while a fetch is in flight (it just sets renderDirty + re-fires
+        // on completion), so continuous change events collapse into roughly
+        // one render per backend roundtrip (~5 fps) instead of queuing.
+        // This beats ``scheduleRender`` here, whose 60 ms debounce resets
+        // on every event and would therefore never fire mid-drag.
+        triggerRender();
+      },
+      onBonePick: (boneName) => {
+        boneSel.value = boneName;
+        _syncRotationSlidersFromBone(boneName);
+      },
+      onDragStart: () => {
+        // Snapshot the pre-drag state so the whole D&D becomes a single
+        // undo entry on release.
+        _beginPoseOp();
+      },
+      onDragEnd: () => {
+        // One final render with the drag's last state — in case the last
+        // change event was coalesced into an in-flight fetch and its
+        // follow-up was skipped because renderDirty was cleared between.
+        scheduleRender();
+        // Rebuild the overlay so any cascade drift accumulated during the
+        // drag is wiped before the next interaction.
+        _rebuildOverlay(settings.pose_adjust?.rotation_overrides);
+        _commitPoseOp();
+      },
+      // IK drag — viewer ran CCD on a parent chain and now needs us to
+      // persist the rotation overrides for every affected bone, refresh
+      // the slider readout for whichever bone is selected (it may be the
+      // end effector OR one of the rotated parents), and trigger a live
+      // mesh re-render.
+      onIkChainChange: (changes) => {
+        for (const { boneName, eulerRad } of changes) {
+          _writeOverride(boneName, eulerRad);
+        }
+        const sel = boneSel.value;
+        if (sel) _syncRotationSlidersFromBone(sel);
+        triggerRender();
+      },
+    });
+    viewer.enterPoseEdit(skel, stored);
+
+    poseEditMode = true;
+    _poseLockSidebar(true);
+    panel.hidden = false;
+    toggleBtn.textContent = window.i18n?.t("pose.edit_exit") || "Finish pose adjust";
+    _rebuildBoneDropdown(skel);
+    _syncRotationSlidersFromBone("");
+  }
+
+  function exit() {
+    viewer.exitPoseEdit();
+    poseEditMode = false;
+    _poseLockSidebar(false);
+    panel.hidden = true;
+    toggleBtn.textContent = window.i18n?.t("pose.edit_enter") || "Adjust pose (rotate)";
+    // One final render with the final overrides so the viewer OBJ reflects
+    // the edits even if the last drag's scheduleRender was still in flight.
+    scheduleRender();
+  }
+
+  toggleBtn.addEventListener("click", () => {
+    if (poseEditMode) exit(); else enter();
+  });
+
+  boneSel.addEventListener("change", () => {
+    viewer.selectPoseBone(boneSel.value || null);
+    _syncRotationSlidersFromBone(boneSel.value);
+  });
+
+  // Number / range sliders — two-way bind to the selected bone. ABSOLUTE
+  // semantics: slider value == bone's current local delta; moving the
+  // slider resets the bone to parent-propagated state and applies the new
+  // delta (handled inside setPoseBoneLocalEuler).
+  const writeEuler = () => {
+    const name = boneSel.value;
+    if (!name) return;
+    const xv = Number(document.getElementById("pose-rot-x-num").value) || 0;
+    const yv = Number(document.getElementById("pose-rot-y-num").value) || 0;
+    const zv = Number(document.getElementById("pose-rot-z-num").value) || 0;
+    const rx = xv * POSE_DEG2RAD;
+    const ry = yv * POSE_DEG2RAD;
+    const rz = zv * POSE_DEG2RAD;
+    viewer.setPoseBoneLocalEuler(name, rx, ry, rz);
+    _writeOverride(name, (rx === 0 && ry === 0 && rz === 0) ? null : [rx, ry, rz]);
+  };
+  const linkPair = (rangeId, numId, live) => {
+    const range = document.getElementById(rangeId);
+    const num = document.getElementById(numId);
+    if (!range || !num) return;
+    let sliderOpActive = false;
+    range.addEventListener("input", () => {
+      if (!sliderOpActive) { _beginPoseOp(); sliderOpActive = true; }
+      num.value = range.value;
+      writeEuler();
+      // Live mesh preview while dragging the slider — see onBoneChange above
+      // for why triggerRender is preferred over the debounced scheduleRender.
+      triggerRender();
+    });
+    range.addEventListener("change", () => {
+      num.value = range.value;
+      writeEuler();
+      scheduleRender();
+      if (sliderOpActive) { _commitPoseOp(); sliderOpActive = false; }
+    });
+    num.addEventListener("change", () => {
+      _beginPoseOp();
+      range.value = num.value;
+      writeEuler();
+      scheduleRender();
+      _commitPoseOp();
+    });
+  };
+  linkPair("pose-rot-x-range", "pose-rot-x-num", true);
+  linkPair("pose-rot-y-range", "pose-rot-y-num", true);
+  linkPair("pose-rot-z-range", "pose-rot-z-num", true);
+
+  resetBone.addEventListener("click", () => {
+    const name = boneSel.value;
+    if (!name) return;
+    _beginPoseOp();
+    // Restore THIS bone to its session-baseline value (or identity if it
+    // wasn't set at session start). Earlier-session edits on other bones
+    // are untouched.
+    const meta = (tabHumanoidSkeleton.image?.bones || []).find((b) => b.name === name);
+    const baselineEuler = meta && _sessionBaseline
+      ? _sessionBaseline.rotationOverrides[String(meta.joint_id)]
+      : null;
+    if (baselineEuler) {
+      viewer.setPoseBoneLocalEuler(name, baselineEuler[0], baselineEuler[1], baselineEuler[2]);
+      _writeOverride(name, baselineEuler);
+    } else {
+      viewer.resetPoseBone(name);
+      _writeOverride(name, null);
+    }
+    _syncRotationSlidersFromBone(name);
+    scheduleRender();
+    _commitPoseOp();
+  });
+  resetAll.addEventListener("click", () => {
+    _beginPoseOp();
+    if (!_sessionBaseline) {
+      // No baseline (shouldn't happen if pose-edit is active) — fall back
+      // to a full clear.
+      viewer.resetAllPoseBones();
+      if (settings.pose_adjust) settings.pose_adjust.rotation_overrides = {};
+      _syncRotationSlidersFromBone(boneSel.value || "");
+      scheduleRender();
+      _commitPoseOp();
+      return;
+    }
+    // Restore settings.rotation_overrides to the baseline snapshot.
+    if (!settings.pose_adjust) settings.pose_adjust = { lean_correction: LEAN_CORRECTION_DEFAULT };
+    settings.pose_adjust.rotation_overrides = Object.fromEntries(
+      Object.entries(_sessionBaseline.rotationOverrides).map(
+        ([k, v]) => [k, [v[0], v[1], v[2]]],
+      ),
+    );
+    // Restore Hips translation to baseline.
+    viewer.setHipsOffset(_sessionBaseline.hipsOffset);
+    // Rebuild the overlay so localDeltas reflect the restored baseline.
+    _rebuildOverlay(settings.pose_adjust.rotation_overrides);
+    _syncRotationSlidersFromBone(boneSel.value || "");
+    scheduleRender();
+    _commitPoseOp();
+  });
+
+  // Wire up Undo / Redo buttons.
+  if (undoBtn) undoBtn.addEventListener("click", () => _undoPoseEdit());
+  if (redoBtn) redoBtn.addEventListener("click", () => _redoPoseEdit());
+
+  // Expose the export-lock toggle for the FBX / BVH handlers further down.
+  window.__poseExportLock = _poseLockForExport;
+  // Allow other modules (e.g. the /api/process success path) to wipe the
+  // undo/redo history when the underlying pose changes — old snapshots
+  // wouldn't make sense against a fresh skeleton.
+  window.__resetPoseUndoHistory = () => {
+    _undoStack.length = 0;
+    _redoStack.length = 0;
+    _pendingUndoSnap = null;
+    _refreshUndoButtons();
+  };
+}
+
 // Sync the shared Character-panel DOM (preset dropdown, source info text,
 // JSON upload label) to the active tab's cached char state.
 function refreshCharPanelFromState() {
@@ -701,6 +1937,11 @@ function scheduleRender() {
   debounceTimer = setTimeout(triggerRender, 60);
 }
 
+// Most recent humanoid skeleton snapshot returned by /api/render. Stored
+// per tab so entering the rotation editor after switching back has a
+// consistent "base" frame. Updated on every successful render.
+const tabHumanoidSkeleton = { image: null, video: null, make: null };
+
 async function triggerRender() {
   if (!currentJobId) return;
   if (renderInFlight) { renderDirty = true; return; }
@@ -715,6 +1956,10 @@ async function triggerRender() {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
     const j = await r.json();
+    const activeTab = document.querySelector(".tab-nav button.active")?.dataset.tab;
+    if (activeTab && activeTab in tabHumanoidSkeleton) {
+      tabHumanoidSkeleton[activeTab] = j.humanoid_skeleton || null;
+    }
     await viewer.loadObj(j.obj_url, currentJobId);
     // First rendered frame unlocks the PNG save button. Export FBX is
     // image-tab only and gated separately by /api/process success — we
@@ -848,6 +2093,7 @@ resetBtn.addEventListener("click", () => {
 exportFbxBtn.addEventListener("click", async () => {
   if (!currentJobId) { fbxInfo.textContent = "先にポーズを推定してください"; return; }
   exportFbxBtn.disabled = true;
+  if (window.__poseExportLock) window.__poseExportLock(true);
   fbxInfo.textContent = "Blender subprocess 起動中... (初回は数秒かかる)";
   try {
     const t0 = performance.now();
@@ -875,6 +2121,7 @@ exportFbxBtn.addEventListener("click", async () => {
     fbxInfo.textContent = `FBX export error: ${e.message || e}`;
   } finally {
     exportFbxBtn.disabled = false;
+    if (window.__poseExportLock) window.__poseExportLock(false);
   }
 });
 
@@ -884,6 +2131,7 @@ exportBvhBtn?.addEventListener("click", async () => {
     return;
   }
   exportBvhBtn.disabled = true;
+  if (window.__poseExportLock) window.__poseExportLock(true);
   if (bvhInfo) bvhInfo.textContent = "Blender subprocess running... (converting to BVH)";
   try {
     const t0 = performance.now();
@@ -904,6 +2152,7 @@ exportBvhBtn?.addEventListener("click", async () => {
     if (bvhInfo) bvhInfo.textContent = `BVH export error: ${e.message || e}`;
   } finally {
     exportBvhBtn.disabled = false;
+    if (window.__poseExportLock) window.__poseExportLock(false);
   }
 });
 
@@ -976,10 +2225,27 @@ runBtn.addEventListener("click", async () => {
     tabJobIds.image = j.job_id;
     runInfo.textContent = window.i18n?.t("input.done") || "推定終了";
     characterUnlocked = true;
+    // Fresh pose estimation arrived → discard any prior pose adjustments
+    // (rotation overrides + Hips translation). The previous bone tree was
+    // tied to the OLD pose; carrying its rotations into the new one would
+    // double-apply transforms and visually break.
+    if (settings.pose_adjust) {
+      settings.pose_adjust.rotation_overrides = {};
+    }
+    if (poseEditMode) {
+      // Exit pose-edit cleanly — bones get rebuilt from the new skeleton
+      // when the user re-enters.
+      const toggleBtn = document.getElementById("pose-edit-toggle-btn");
+      if (toggleBtn) toggleBtn.click();
+    }
+    viewer.clearHipsTranslation();
+    if (window.__resetPoseUndoHistory) window.__resetPoseUndoHistory();
     // Inference landed — unlock the image-tab FBX download and re-render
     // the now-posed body with whatever character the user was viewing.
     exportFbxBtn.hidden = false;
     exportBvhBtn.hidden = false;
+    const poseEditToggleBtn = document.getElementById("pose-edit-toggle-btn");
+    if (poseEditToggleBtn) poseEditToggleBtn.hidden = false;
     scheduleRender();
 
     statusEl.textContent = `done — ${j.elapsed_sec}s`;
@@ -1463,6 +2729,7 @@ async function boot() {
     buildSliders(blendshapesEl, "blendshapes", schema.blendshapes);
   } catch (e) { console.error("slider schema load failed:", e); }
   initLeanSliders();
+  initPoseEditUi();
   await refreshPresets();
   await refreshPackList();
   await refreshFbxStatus();

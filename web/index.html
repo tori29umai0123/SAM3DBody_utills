@@ -40,7 +40,7 @@
   <aside id="sidebar">
     <!-- ===== Tab ① Image ===== -->
     <div data-tab-panel="image">
-      <section>
+      <section data-pose-lock>
         <h2 data-i18n="section.input">Input</h2>
         <label class="file-drop" id="file-drop">
           <input type="file" id="file-input" accept="image/*" />
@@ -53,12 +53,49 @@
       </section>
       <section>
         <h2 data-i18n="section.pose_adjust">Pose Adjust</h2>
-        <label class="param-row" title="ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。">
+        <label class="param-row" data-pose-lock title="ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。">
           <span data-i18n="pose.lean_correction">前かがみ補正</span>
           <input type="range" id="img-lean-range" min="0" max="1" step="0.01" value="0" />
           <input type="number" id="img-lean-num" min="0" max="1" step="0.01" value="0" />
         </label>
-        <p class="muted" data-i18n="pose.lean_correction_hint">ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。</p>
+        <p class="muted" data-pose-lock data-i18n="pose.lean_correction_hint">ポーズが前のめりになるとき、後ろに反らせる。リアルタイムで 3D プレビューに反映されます。</p>
+        <div class="row">
+          <button id="pose-edit-toggle-btn" hidden
+                  data-i18n="pose.edit_enter"
+                  data-i18n-title="tooltip.pose_edit">ポーズ調整（回転）</button>
+        </div>
+        <div id="pose-edit-panel" hidden>
+          <div class="pose-edit-bones">
+            <label class="param-row">
+              <span data-i18n="pose.selected_bone">選択中のボーン</span>
+              <select id="pose-bone-select"></select>
+            </label>
+            <div class="param-row">
+              <span style="min-width: 110px" data-i18n="pose.rot_x">X 軸 (°)</span>
+              <input type="range"  id="pose-rot-x-range" min="-180" max="180" step="0.5" value="0" />
+              <input type="number" id="pose-rot-x-num"   min="-180" max="180" step="0.5" value="0" />
+            </div>
+            <div class="param-row">
+              <span style="min-width: 110px" data-i18n="pose.rot_y">Y 軸 (°)</span>
+              <input type="range"  id="pose-rot-y-range" min="-180" max="180" step="0.5" value="0" />
+              <input type="number" id="pose-rot-y-num"   min="-180" max="180" step="0.5" value="0" />
+            </div>
+            <div class="param-row">
+              <span style="min-width: 110px" data-i18n="pose.rot_z">Z 軸 (°)</span>
+              <input type="range"  id="pose-rot-z-range" min="-180" max="180" step="0.5" value="0" />
+              <input type="number" id="pose-rot-z-num"   min="-180" max="180" step="0.5" value="0" />
+            </div>
+            <div class="row">
+              <button id="pose-undo-btn" data-i18n="pose.undo" disabled>元に戻す (Ctrl+Z)</button>
+              <button id="pose-redo-btn" data-i18n="pose.redo" disabled>やり直す (Ctrl+Y)</button>
+            </div>
+            <div class="row">
+              <button id="pose-reset-bone-btn" data-i18n="pose.reset_bone">このボーンをリセット</button>
+              <button id="pose-reset-all-btn" data-i18n="pose.reset_all">全ボーンをリセット</button>
+            </div>
+            <p class="muted" data-i18n="pose.edit_hint">3D ビュー上のハンドルをクリックしてもボーンを選択できます。ドラッグ中はスケルトンのみ更新し、離した瞬間にメッシュが再描画されます。</p>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -152,7 +189,7 @@
       <h2 data-i18n="section.character">Character</h2>
 
       <!-- Preset selection (always available) -->
-      <div class="row">
+      <div class="row" data-pose-lock>
         <select id="preset-select">
           <option value="" data-i18n="character.preset_placeholder">(preset)</option>
         </select>
@@ -160,7 +197,7 @@
       </div>
 
       <!-- Optional: drop a custom character JSON to override the preset -->
-      <label class="file-drop compact" id="char-json-drop">
+      <label class="file-drop compact" id="char-json-drop" data-pose-lock>
         <input type="file" id="char-json-input" accept=".json,application/json" />
         <span id="char-json-label" data-i18n="character.json_drop">キャラクター JSON をアップロード (任意)</span>
       </label>
@@ -226,7 +263,7 @@
   <section id="viewport" data-tab-show="image video make">
     <canvas id="three-canvas"></canvas>
     <div id="viewport-overlay" class="muted" data-i18n="viewport.initial">画像を読み込んで「ポーズを推定」を押すと 3D メッシュが表示されます</div>
-    <button id="save-render-btn" class="viewport-btn" data-tab-show="image"
+    <button id="save-render-btn" class="viewport-btn" data-tab-show="image" data-pose-lock
             disabled data-i18n="viewport.save_png"
             data-i18n-title="tooltip.save_png">PNG 保存</button>
   </section>

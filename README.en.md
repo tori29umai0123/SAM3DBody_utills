@@ -38,9 +38,19 @@ Retarget a pose from a single image onto any body shape and export a rigged FBX 
 - A **Lean correction** slider (0–1, default 0) un-bends a forward-leaning upper body along the spine→neck chain
 - In the bottom **Character panel**, pick a preset or drop in a custom character JSON to choose the target body shape
 - Three.js renders the result live
+- **Adjust pose (rotate / translate)** opens a fine-grained bone editor:
+  - Click a bone (cyan sphere) in the 3D view to select; drag the translate gizmo that appears to run **CCD IK** on the parent chain
+  - 22 main bones + finger phalanges (5 × 4 per hand = 40) + toe tips = 64 bones total
+  - **X / Y / Z sliders** in the side panel give per-axis fine rotation for the selected bone
+  - Drag **Hips** to translate the whole body (skips IK, plain translate)
+  - Knee and elbow hyperextension is blocked automatically (kneecap can't fold to the back)
+  - **Undo / Redo** with Ctrl+Z / Ctrl+Y or buttons — each D&D is one history step
+  - `Reset this bone` / `Reset all bones` restore to the state at session entry (prior-session edits are preserved)
+  - Rotations are baked into the FBX / BVH export. A fresh pose estimation (`/api/process`) clears the editor history and overrides
 - Clicking `Download FBX` kicks off a Blender subprocess (`tools/build_rigged_fbx.py`) that emits a rigged FBX — the interactive preview never touches Blender.
 - Clicking `Download BVH` builds the same rigged FBX and converts it to a **single-frame** BVH via `tools/fbx2bvh_simple.py`.
 - Blender is required for both FBX and BVH export.
+- Body shape (`bone_lengths`), pose adjustments (`rotation_overrides`), and the lean correction are **all baked into the FBX / BVH export**.
 
 ### 🎬 2. Video tab
 

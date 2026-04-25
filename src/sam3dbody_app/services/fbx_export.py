@@ -57,25 +57,16 @@ def _scale_skeleton_rest(joint_coords: np.ndarray,
                          parents: np.ndarray,
                          cats: np.ndarray,
                          bone_scales: dict[str, float]) -> np.ndarray:
-    """Recompute joint positions after applying the per-chain bone-length
-    scales. Must be kept in sync with the forward sweep inside
-    ``apply_bone_length_scales`` so the rigged rest skeleton matches the mesh."""
-    scale_by_cat = np.array(
-        [1.0, bone_scales["torso"], bone_scales["neck"],
-         bone_scales["arm"], bone_scales["leg"]],
-        dtype=np.float32,
+    """Thin wrapper around ``cs.scale_joint_coords_by_bone_length`` so the
+    exporter passes its own ``parents`` / ``cats`` (read from the cached MHR
+    head, not the module-level cache) without having to know the kw-only
+    plumbing."""
+    return cs.scale_joint_coords_by_bone_length(
+        joint_coords,
+        arm_scale=bone_scales["arm"], leg_scale=bone_scales["leg"],
+        torso_scale=bone_scales["torso"], neck_scale=bone_scales["neck"],
+        parents=parents, cats=cats,
     )
-    new_pos = np.zeros_like(joint_coords)
-    num_joints = joint_coords.shape[0]
-    for j in range(num_joints):
-        p = int(parents[j])
-        if p < 0:
-            new_pos[j] = joint_coords[j]
-            continue
-        off = joint_coords[j] - joint_coords[p]
-        s = float(scale_by_cat[int(cats[j])])
-        new_pos[j] = new_pos[p] + s * off
-    return new_pos
 
 
 def _unpack_mhr_forward(tensor_tuple):
@@ -134,6 +125,7 @@ def build_rigged_package(
         lean_strength = float(pa.get("lean_correction", _lean_default))
     except (TypeError, ValueError):
         lean_strength = _lean_default
+    rotation_overrides = pa.get("rotation_overrides") or {}
 
     shape_params = cs.build_shape_params(bp, mhr_head.num_shape_comps, device)
     scale_params = torch.zeros((1, mhr_head.num_scale_comps), dtype=torch.float32, device=device)
@@ -215,6 +207,13 @@ def build_rigged_package(
         posed_rots, posed_coords = cs.apply_pose_lean_correction_rig(
             posed_rots, posed_coords, parents, lean_strength,
             chain=lean_chain,
+        )
+
+    # Per-bone rotation overrides from the image-tab rotation editor ride
+    # in the rig so exported FBX/BVH match what the user saw in the viewer.
+    if rotation_overrides:
+        posed_rots, posed_coords = cs.apply_pose_rotation_overrides_rig(
+            posed_rots, posed_coords, parents, rotation_overrides,
         )
 
     names_full = [_KNOWN_JOINT_NAMES.get(i, f"joint_{i:03d}") for i in range(num_joints)]

@@ -63,14 +63,92 @@ POSE_ADJUST_DEFAULTS: dict[str, float] = {
     "lean_correction": 0.5,
 }
 
+# ---------------------------------------------------------------------------
+# Humanoid bone subset exposed to the image-tab rotation editor.
+#
+# Tuples are ``(humanoid_name, mhr_joint_id, humanoid_parent_name_or_None)``
+# in topological order (ancestor → descendant). The UI builds the pickable
+# skeleton overlay from this table and the server uses it to normalise the
+# ``rotation_overrides`` payload before applying it to the MHR skeleton.
+HUMANOID_BONES: tuple[tuple[str, int, str | None], ...] = (
+    ("Hips",           1,   None),
+    ("LeftUpLeg",      2,   "Hips"),
+    ("LeftLeg",        3,   "LeftUpLeg"),
+    ("LeftFoot",       4,   "LeftLeg"),
+    ("LeftToe_End",    8,   "LeftFoot"),
+    ("RightUpLeg",     18,  "Hips"),
+    ("RightLeg",       19,  "RightUpLeg"),
+    ("RightFoot",      20,  "RightLeg"),
+    ("RightToe_End",   24,  "RightFoot"),
+    ("Spine",          35,  "Hips"),
+    ("Spine1",         36,  "Spine"),
+    ("Spine2",         37,  "Spine1"),
+    ("Neck",           110, "Spine2"),
+    ("Head",           113, "Neck"),
+    ("LeftShoulder",   74,  "Spine2"),
+    ("LeftArm",        75,  "LeftShoulder"),
+    ("LeftForeArm",    76,  "LeftArm"),
+    ("LeftHand",       78,  "LeftForeArm"),
+    # Left hand fingers — joint indices from tools/humanoid_convert.py
+    # (joint_NNN → HumanoidName mapping; the 4th phalanx is the fingertip
+    # endpoint, kept so the user has a visible tip handle to click).
+    ("LeftHandThumb1",   96,  "LeftHand"),
+    ("LeftHandThumb2",   97,  "LeftHandThumb1"),
+    ("LeftHandThumb3",   98,  "LeftHandThumb2"),
+    ("LeftHandThumb4",   100, "LeftHandThumb3"),
+    ("LeftHandIndex1",   92,  "LeftHand"),
+    ("LeftHandIndex2",   93,  "LeftHandIndex1"),
+    ("LeftHandIndex3",   94,  "LeftHandIndex2"),
+    ("LeftHandIndex4",   95,  "LeftHandIndex3"),
+    ("LeftHandMiddle1",  88,  "LeftHand"),
+    ("LeftHandMiddle2",  89,  "LeftHandMiddle1"),
+    ("LeftHandMiddle3",  90,  "LeftHandMiddle2"),
+    ("LeftHandMiddle4",  91,  "LeftHandMiddle3"),
+    ("LeftHandRing1",    84,  "LeftHand"),
+    ("LeftHandRing2",    85,  "LeftHandRing1"),
+    ("LeftHandRing3",    86,  "LeftHandRing2"),
+    ("LeftHandRing4",    87,  "LeftHandRing3"),
+    ("LeftHandPinky1",   80,  "LeftHand"),
+    ("LeftHandPinky2",   81,  "LeftHandPinky1"),
+    ("LeftHandPinky3",   82,  "LeftHandPinky2"),
+    ("LeftHandPinky4",   83,  "LeftHandPinky3"),
+    ("RightShoulder",  38,  "Spine2"),
+    ("RightArm",       39,  "RightShoulder"),
+    ("RightForeArm",   40,  "RightArm"),
+    ("RightHand",      42,  "RightForeArm"),
+    # Right hand fingers
+    ("RightHandThumb1",  60,  "RightHand"),
+    ("RightHandThumb2",  61,  "RightHandThumb1"),
+    ("RightHandThumb3",  62,  "RightHandThumb2"),
+    ("RightHandThumb4",  64,  "RightHandThumb3"),
+    ("RightHandIndex1",  56,  "RightHand"),
+    ("RightHandIndex2",  57,  "RightHandIndex1"),
+    ("RightHandIndex3",  58,  "RightHandIndex2"),
+    ("RightHandIndex4",  59,  "RightHandIndex3"),
+    ("RightHandMiddle1", 52,  "RightHand"),
+    ("RightHandMiddle2", 53,  "RightHandMiddle1"),
+    ("RightHandMiddle3", 54,  "RightHandMiddle2"),
+    ("RightHandMiddle4", 55,  "RightHandMiddle3"),
+    ("RightHandRing1",   48,  "RightHand"),
+    ("RightHandRing2",   49,  "RightHandRing1"),
+    ("RightHandRing3",   50,  "RightHandRing2"),
+    ("RightHandRing4",   51,  "RightHandRing3"),
+    ("RightHandPinky1",  44,  "RightHand"),
+    ("RightHandPinky2",  45,  "RightHandPinky1"),
+    ("RightHandPinky3",  46,  "RightHandPinky2"),
+    ("RightHandPinky4",  47,  "RightHandPinky3"),
+)
+
+HUMANOID_JOINT_IDS: frozenset[int] = frozenset(j for _n, j, _p in HUMANOID_BONES)
+
 # (joint_id, base_angle_rad) pairs applied in chain order. base_angle scaled
 # by slider strength ∈ [0, 1]. strength=1.0 → ~20° cumulative backward tilt
 # at the head; strength=0.5 → ~10° (calibrated against standing reference
 # images 04_11, 01_10, 01_11, 02_11, 03_10, 04_10).
 LEAN_CHAIN_DEFAULT: tuple[tuple[int, float], ...] = (
-    (35,  math.radians(14.0)),    # spine_01
-    (36,  math.radians(14.0)),    # spine_02
-    (37,  math.radians(14.0)),   # spine_03
+    (35,  math.radians(20.0)),    # spine_01
+    # (36,  math.radians(1.0)),    # spine_02
+    # (37,  math.radians(1.0)),   # spine_03
     (110, math.radians(2.0)),   # neck_01
     (113, math.radians(2.0)),    # head
 )
@@ -180,6 +258,214 @@ def apply_pose_lean_correction_mesh(
             kz = jc[k, 2] - pivot[2]
             jc[k, 1] = pivot[1] + ky * full_c - kz * full_s
             jc[k, 2] = pivot[2] + ky * full_s + kz * full_c
+
+    return v.astype(vertices.dtype)
+
+
+# ---------------------------------------------------------------------------
+# Per-bone rotation overrides (image tab "ポーズ調整（回転）" editor).
+#
+# ``rotation_overrides`` is a ``dict[int, tuple[float, float, float]]`` keyed
+# by MHR joint_id. Each value is a local-frame Euler-XYZ rotation (radians)
+# applied in the bone's OWN coord frame at the moment of application — i.e.
+# after lean_correction and after any ancestor overrides in topological order.
+# Frontend stores Euler as three.js ``Euler`` with order ``"XYZ"`` so the
+# matrix below matches three.js exactly: ``R = Rx @ Ry @ Rz``.
+#
+# Applied the same way as lean_correction:
+#   R_world_delta = rots_current[j] @ R_local @ rots_current[j].T
+#   coords[k]     = coords[j] + R_world_delta @ (coords[k] - coords[j])
+#   rots[k]       = R_world_delta @ rots[k]   for k in subtree(j)
+
+def _euler_xyz_to_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+    Rx = np.array([[1.0, 0.0, 0.0],
+                   [0.0,  cx, -sx],
+                   [0.0,  sx,  cx]], dtype=np.float32)
+    Ry = np.array([[ cy, 0.0,  sy],
+                   [0.0, 1.0, 0.0],
+                   [-sy, 0.0,  cy]], dtype=np.float32)
+    Rz = np.array([[ cz, -sz, 0.0],
+                   [ sz,  cz, 0.0],
+                   [0.0, 0.0, 1.0]], dtype=np.float32)
+    return (Rx @ Ry @ Rz).astype(np.float32)
+
+
+def _compute_joint_depth(parents: np.ndarray) -> np.ndarray:
+    """BFS-safe depth for sorting overrides in topological order."""
+    J = int(parents.shape[0])
+    depth = np.full(J, -1, dtype=np.int32)
+    for j in range(J):
+        if depth[j] >= 0:
+            continue
+        chain: list[int] = []
+        cur = j
+        while cur >= 0 and depth[cur] < 0:
+            chain.append(cur)
+            cur = int(parents[cur])
+        base = 0 if cur < 0 else int(depth[cur]) + 1
+        for n in reversed(chain):
+            p = int(parents[n])
+            depth[n] = 0 if p < 0 else int(depth[p]) + 1
+    return depth
+
+
+def _normalise_rotation_overrides(
+    overrides, num_joints: int,
+) -> list[tuple[int, float, float, float]]:
+    """Parse a loose dict / list payload into ``(joint_id, rx, ry, rz)`` rows,
+    dropping invalid / near-zero entries."""
+    if not overrides:
+        return []
+    items = overrides.items() if isinstance(overrides, dict) else overrides
+    rows: list[tuple[int, float, float, float]] = []
+    for entry in items:
+        if isinstance(entry, tuple) and len(entry) == 2:
+            jid, euler = entry
+        else:
+            continue
+        try:
+            j = int(jid)
+        except (TypeError, ValueError):
+            continue
+        if j < 0 or j >= num_joints:
+            continue
+        if j not in HUMANOID_JOINT_IDS:
+            # Restrict to the advertised humanoid subset — the UI cannot
+            # target anything else and unknown ids would bypass the depth
+            # ordering guarantees.
+            continue
+        try:
+            rx = float(euler[0]); ry = float(euler[1]); rz = float(euler[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (math.isfinite(rx) and math.isfinite(ry) and math.isfinite(rz)):
+            continue
+        if abs(rx) < 1e-8 and abs(ry) < 1e-8 and abs(rz) < 1e-8:
+            continue
+        rows.append((j, rx, ry, rz))
+    return rows
+
+
+def _mat_to_axis_angle(R: np.ndarray) -> tuple[np.ndarray, float]:
+    """Return (unit axis, angle) for rotation matrix R. Identity / near-π
+    fallbacks return a degenerate axis with angle 0.0."""
+    trace = float(R[0, 0] + R[1, 1] + R[2, 2])
+    cos_th = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
+    theta = math.acos(cos_th)
+    if abs(theta) < 1e-8:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0
+    x = R[2, 1] - R[1, 2]
+    y = R[0, 2] - R[2, 0]
+    z = R[1, 0] - R[0, 1]
+    n = math.sqrt(x * x + y * y + z * z)
+    if n < 1e-10:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0
+    return np.array([x / n, y / n, z / n], dtype=np.float32), float(theta)
+
+
+def apply_pose_rotation_overrides_rig(
+    posed_joint_rots: np.ndarray,
+    posed_joint_coords: np.ndarray,
+    parents: np.ndarray,
+    overrides,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply humanoid-bone rotation overrides to ``(rots, coords)`` in-place
+    (on a copy), in topological order. The override at each bone j is a
+    local-frame Euler; converted to world-frame via conjugation through the
+    bone's CURRENT rotation (``rots[j]`` after all ancestor overrides)."""
+    rots = posed_joint_rots.astype(np.float32, copy=True)
+    coords = posed_joint_coords.astype(np.float32, copy=True)
+    if parents is None:
+        return rots, coords
+    num_joints = int(parents.shape[0])
+
+    rows = _normalise_rotation_overrides(overrides, num_joints)
+    if not rows:
+        return rots, coords
+    depth = _compute_joint_depth(parents)
+    rows.sort(key=lambda r: int(depth[r[0]]))
+
+    for j, rx, ry, rz in rows:
+        R_local = _euler_xyz_to_matrix(rx, ry, rz)
+        R_bone = rots[j]
+        R_world = (R_bone @ R_local @ R_bone.T).astype(np.float32)
+
+        subtree = _subtree_indices(parents, j)
+        if not subtree:
+            continue
+        pivot = coords[j].copy()
+        for k in subtree:
+            off = coords[k] - pivot
+            coords[k] = pivot + R_world @ off
+            rots[k] = (R_world @ rots[k]).astype(np.float32)
+
+    return rots, coords
+
+
+def apply_pose_rotation_overrides_mesh(
+    vertices: np.ndarray,
+    posed_joint_rots: np.ndarray,
+    joint_coords_posed: np.ndarray,
+    parents: np.ndarray,
+    overrides,
+) -> np.ndarray:
+    """Mesh counterpart of the rig override helper. Rotates vertices around
+    each bone's pivot by an angle proportional to the vertex's total LBS
+    weight in the bone's subtree — same LBS-blending trick as the lean
+    correction so arms don't get dragged by torso rotations, etc."""
+    if parents is None:
+        return vertices
+    W = _FACE_BS_CACHE.get("lbs_weights")
+    if W is None:
+        return vertices
+    num_joints = int(parents.shape[0])
+    rows = _normalise_rotation_overrides(overrides, num_joints)
+    if not rows:
+        return vertices
+
+    Wsum = W.sum(axis=1, keepdims=True).astype(np.float32)
+    Wsum_safe = np.where(Wsum > 1e-6, Wsum, 1.0)
+    W_norm = (W / Wsum_safe).astype(np.float32)
+
+    v = vertices.astype(np.float32, copy=True)
+    jc = joint_coords_posed.astype(np.float32, copy=True)
+    jr = posed_joint_rots.astype(np.float32, copy=True)
+
+    depth = _compute_joint_depth(parents)
+    rows.sort(key=lambda r: int(depth[r[0]]))
+
+    for j, rx, ry, rz in rows:
+        R_local = _euler_xyz_to_matrix(rx, ry, rz)
+        R_bone = jr[j]
+        R_world = (R_bone @ R_local @ R_bone.T).astype(np.float32)
+
+        subtree = _subtree_indices(parents, j)
+        if not subtree:
+            continue
+
+        pivot = jc[j].copy()
+        # True LBS contribution from this override: every bone in subtree(j)
+        # rotates rigidly by R_world around `pivot`, so for a vertex with
+        # weight ``W[v,b]`` on bone b∈subtree, the LBS displacement is
+        # ``W[v,b] * (R_world @ (v - pivot) - (v - pivot))``. Summed over
+        # the subtree → ``sub_w * delta_v``. Previous implementation used a
+        # ``rotate(sub_w * theta)`` approximation that diverges from real
+        # LBS at large angles (the user's spine + arm combination), causing
+        # the mesh near the rotated bone to under-follow the bone overlay.
+        sub_w = W_norm[:, subtree].sum(axis=1).astype(np.float32)  # (V,)
+        offs = (v - pivot).astype(np.float32)
+        rotated_offs = (offs @ R_world.T).astype(np.float32)        # (V, 3)
+        delta = (rotated_offs - offs).astype(np.float32)
+        v = (v + sub_w[:, None] * delta).astype(np.float32)
+
+        # Carry-forward joint data so later overrides see the current world state.
+        for k in subtree:
+            off = jc[k] - pivot
+            jc[k] = pivot + R_world @ off
+            jr[k] = (R_world @ jr[k]).astype(np.float32)
 
     return v.astype(vertices.dtype)
 
@@ -656,6 +942,50 @@ def apply_face_blendshapes(
 # ---------------------------------------------------------------------------
 # Bone-length scaling.
 # ---------------------------------------------------------------------------
+
+def scale_joint_coords_by_bone_length(
+    joint_coords: np.ndarray,
+    arm_scale: float,
+    leg_scale: float,
+    torso_scale: float,
+    neck_scale: float,
+    *,
+    parents: np.ndarray | None = None,
+    cats: np.ndarray | None = None,
+) -> np.ndarray:
+    """Recompute joint positions after the per-chain bone-length scales —
+    walks the skeleton parent→child, scaling each parent→child offset by its
+    chain's slider value. Must be kept in sync with ``apply_bone_length_scales``
+    so the live skeleton overlay matches the deformed mesh.
+
+    Falls back to ``_FACE_BS_CACHE`` for ``parents`` / ``cats`` when not
+    provided (the live renderer doesn't carry them around)."""
+    if (arm_scale == 1.0 and leg_scale == 1.0
+            and torso_scale == 1.0 and neck_scale == 1.0):
+        return joint_coords
+    if parents is None:
+        parents = _FACE_BS_CACHE.get("joint_parents")
+    if cats is None:
+        cats = _FACE_BS_CACHE.get("joint_chain_cats")
+    if parents is None or cats is None:
+        return joint_coords
+    scale_by_cat = np.array(
+        [1.0, float(torso_scale), float(neck_scale),
+         float(arm_scale), float(leg_scale)],
+        dtype=np.float32,
+    )
+    new_pos = np.zeros_like(joint_coords, dtype=np.float32)
+    num_joints = joint_coords.shape[0]
+    for j in range(num_joints):
+        p = int(parents[j])
+        if p < 0:
+            new_pos[j] = joint_coords[j]
+            continue
+        off = joint_coords[j] - joint_coords[p]
+        s = float(scale_by_cat[int(cats[j])])
+        new_pos[j] = new_pos[p] + s * off
+    return new_pos.astype(joint_coords.dtype)
+
 
 def apply_bone_length_scales(
     vertices: np.ndarray,
