@@ -1,36 +1,37 @@
 # Body Utils Standalone WebUI
 
-**Language:** [日本語](README.md) / English
+**Language:** [Japanese](README.md) / English
 
 A standalone FastAPI + Three.js web app for turning a single image or video into a rigged 3D character and motion FBX / BVH without ComfyUI.
 
 ## Overview
 
-- Image tab: create a foreground mask with BiRefNet, estimate pose, and export a rigged FBX or single-frame BVH.
-- Video tab: estimate motion per frame and export an animated FBX or full-length BVH.
-- Character Make tab: edit body shape, bone lengths, and blendshape sliders, then save a preset JSON.
-- Preset Admin tab: switch preset packs and rebuild blendshape data from an edited FBX.
+- Image tab: load an image, estimate pose, and export a rigged FBX or single-frame BVH.
+- Video tab: load a video, estimate motion per frame, and export an animated FBX or full-length BVH.
+- Character Make tab: adjust body shape in the UI and save character settings as preset JSON.
+- Preset Admin tab: developer-oriented tools for adding blendshapes and managing preset data.
 
 ## Features
 
 ### Image
 
-- BiRefNet masks a person or mascot-like foreground subject.
-- Transparent PNGs are composited onto white before inference.
 - The app builds a retargetable rig from the estimated pose.
 - Pose edits, body shape changes, and lean correction are baked into FBX / BVH export.
 
 ### Video
 
-- Motion is extracted frame by frame and baked onto the selected character rig.
+- A video is processed frame by frame and baked onto the selected character rig.
 - `root_motion_mode`, `bbox thr`, `fps`, `stride`, and `max frames` can be adjusted.
 - The current animated FBX can be converted to full-length BVH.
 
-### Presets
+### Character Make
 
-- Character presets live under `presets/<pack>/chara_settings_presets/`.
-- Existing packs that follow the current `presets/<pack>/` layout can be reused as-is.
-- Blendshape delta data can be rebuilt from an edited FBX in the Preset Admin tab.
+- You can adjust the character body shape while previewing it in the UI.
+- Saved character settings are stored as JSON. They are loaded automatically if placed in `SAM3DBody_utills/presets/default/chara_settings_presets`, and you can also drag and drop a JSON file from the browser.
+
+### Preset Admin
+
+- This is a developer-focused area. You can add blendshapes created in Blender and manage related preset data.
 
 ## Requirements
 

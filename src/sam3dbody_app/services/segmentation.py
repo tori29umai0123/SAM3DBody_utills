@@ -4,9 +4,12 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from ..config import get_paths
 
 log = logging.getLogger(__name__)
 
@@ -64,14 +67,36 @@ _BIREFNET_DEVICE: str | None = None
 
 def _backend_to_model_id(backend: str) -> tuple[str, str]:
     name = (backend or "birefnet_lite").strip().lower()
-    if name in ("birefnet", "birefnet_general"):
-        return "ZhengPeng7/BiRefNet", "birefnet"
-    if name in ("birefnet_lite", "birefnet_auto"):
+    if name in ("", "birefnet_lite", "birefnet_auto", "birefnet", "birefnet_general"):
         return "ZhengPeng7/BiRefNet_lite", "birefnet_lite"
     raise RuntimeError(
         f"unknown segmentation backend {backend!r}; "
-        "expected one of birefnet_lite, birefnet, birefnet_general, birefnet_auto"
+        "expected birefnet_lite"
     )
+
+
+def _local_birefnet_dir() -> Path:
+    root = get_paths().models_dir / "birefnet" / "lite"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _ensure_local_birefnet_snapshot(model_id: str) -> Path:
+    local_dir = _local_birefnet_dir()
+    if (local_dir / "config.json").is_file():
+        return local_dir
+
+    log.info("BiRefNet weights not found under %s; downloading %s", local_dir, model_id)
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("huggingface_hub is required to download BiRefNet weights") from exc
+
+    snapshot_download(repo_id=model_id, local_dir=str(local_dir))
+
+    if not (local_dir / "config.json").is_file():
+        raise RuntimeError(f"BiRefNet download completed but config.json is missing under {local_dir}")
+    return local_dir
 
 
 def _load_birefnet(model_id: str):
@@ -85,8 +110,13 @@ def _load_birefnet(model_id: str):
 
         torch.set_float32_matmul_precision("high")
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("loading BiRefNet model %s on %s", model_id, device)
-        model = AutoModelForImageSegmentation.from_pretrained(model_id, trust_remote_code=True)
+        local_dir = _ensure_local_birefnet_snapshot(model_id)
+        log.info("loading BiRefNet model %s from %s on %s", model_id, local_dir, device)
+        model = AutoModelForImageSegmentation.from_pretrained(
+            str(local_dir),
+            trust_remote_code=True,
+            local_files_only=True,
+        )
         model.to(device)
         model.eval()
         if device == "cuda":

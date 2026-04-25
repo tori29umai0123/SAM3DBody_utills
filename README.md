@@ -15,22 +15,23 @@ ComfyUI なしで、単一画像または動画から rig 付き 3D キャラク
 
 ### 画像
 
-- BiRefNet で人物またはマスコット系の前景対象をマスクします。
-- 透明 PNG は推論前に白背景へ合成します。
-- 推定したポーズからリターゲット可能な rig を構築します。
+- 画像を入力し、推定したポーズからリターゲット可能な rig を構築します。
 - ポーズ編集、体型変更、lean 補正は FBX / BVH 出力へ反映されます。
 
 ### 動画
 
-- モーションをフレーム単位で抽出し、選択中のキャラクター rig に焼き込みます。
+- 動画を入力し、モーションをフレーム単位で抽出し、選択中のキャラクター rig に焼き込みます。
 - `root_motion_mode`, `bbox thr`, `fps`, `stride`, `max frames` を調整できます。
 - 現在の animated FBX を全フレーム BVH に変換できます。
 
-### Preset
+### キャラメイク
 
-- キャラクター preset は `presets/<pack>/chara_settings_presets/` に配置します。
-- 現行の `presets/<pack>/` 構造に沿った pack はそのまま流用できます。
-- Preset Admin タブから、編集済み FBX をもとに blendshape delta を再構築できます。
+- UIで確認しながらキャラクターの体形を設定できます
+- 設定したキャラクターはjsonとして保存されます。SAM3DBody_utills/presets/default/chara_settings_presetsに追加すると読みこまれますし、ブラウザからjsonをD＆Dすることもできます
+
+### Preset Admin
+
+- 開発者向けの機能です。Blenderで作成したブレンドシェイプを追加したり色々できます。
 
 ## 動作要件
 
