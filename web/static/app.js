@@ -12,7 +12,6 @@ const fileDrop = $("file-drop");
 const fileLabel = $("file-label");
 const previewEl = $("preview");
 const runBtn = $("run-btn");
-const runCancelBtn = $("run-cancel-btn");
 const runInfo = $("run-info");
 const overlay = $("viewport-overlay");
 // Segmentation params now live in config.ini [segmentation]; no longer in UI.
@@ -49,6 +48,8 @@ function activateTab(name) {
   // pointer-events rule, but programmatic calls (localStorage restore etc.)
   // can still land here.
   if (poseEditMode) return;
+  // Same defense while pose / motion inference is in flight.
+  if (inferenceLocked) return;
   // Honor runtime feature flags: if Preset Admin is disabled in config.ini,
   // bounce away silently when someone tries to activate it.
   if (name === "admin" && !featureFlags.preset_pack_admin) {
@@ -2167,25 +2168,126 @@ exportBvhBtn?.addEventListener("click", async () => {
 let currentAbortController = null;
 let inferenceLocked = false;
 
-function _lockTabs(lock) {
+// All interactive form-control IDs that should be frozen while inference is
+// in flight. The active run button is excluded by name in lockUiForInference()
+// because it doubles as the stop button while running.
+const INFERENCE_LOCK_IDS = [
+  // Header
+  "lang-select",
+  // Image tab
+  "file-input",
+  "img-lean-range", "img-lean-num",
+  "pose-edit-toggle-btn",
+  "pose-bone-select",
+  "pose-rot-x-range", "pose-rot-x-num",
+  "pose-rot-y-range", "pose-rot-y-num",
+  "pose-rot-z-range", "pose-rot-z-num",
+  "pose-undo-btn", "pose-redo-btn",
+  "pose-reset-bone-btn", "pose-reset-all-btn",
+  "save-render-btn",
+  "export-fbx-btn", "export-bvh-btn",
+  // Video tab
+  "video-input",
+  "video-bbox-thr", "video-root-mode",
+  "video-fps", "video-stride", "video-max-frames",
+  "video-lean-range", "video-lean-num",
+  "video-download-btn", "video-download-bvh-btn",
+  // Make tab
+  "reset-btn", "make-download-btn",
+  // Admin tab
+  "pack-select", "pack-switch-btn",
+  "pack-new-name", "pack-clone-btn",
+  "pack-delete-btn",
+  "fbx-input", "fbx-rebuild-btn",
+  // Character section (shared)
+  "preset-select", "load-preset-btn", "char-json-input",
+  // The other tab's run button (one-of-two should always be locked).
+  "run-btn", "video-run-btn",
+];
+
+let _inferenceSavedDisabled = null;
+
+function lockUiForInference(activeRunBtn) {
+  _inferenceSavedDisabled = {};
+  for (const id of INFERENCE_LOCK_IDS) {
+    if (activeRunBtn && id === activeRunBtn.id) continue;
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _inferenceSavedDisabled[id] = el.disabled;
+    el.disabled = true;
+  }
+  // Tabs (active one stays clickable visually but the click is a no-op
+  // because activateTab() refuses to switch while inferenceLocked).
   document.querySelectorAll(".tab-nav button[data-tab]").forEach((b) => {
-    if (!b.classList.contains("active")) b.disabled = lock;
+    _inferenceSavedDisabled["__tab__" + b.dataset.tab] = b.disabled;
+    if (!b.classList.contains("active")) b.disabled = true;
   });
+  // Dynamic Character sliders (Make tab) — created at runtime, so disable
+  // the entire container's form controls in one sweep. We don't bother
+  // saving prior state: these sliders aren't selectively disabled outside
+  // of inference, so the unlock side just re-enables them all.
+  for (const containerId of ["body-params-sliders", "bone-lengths-sliders", "blendshapes-sliders"]) {
+    const c = document.getElementById(containerId);
+    if (!c) continue;
+    c.querySelectorAll("input, select, button").forEach((el) => {
+      el.disabled = true;
+    });
+  }
 }
 
-function beginInference(cancelBtn) {
+function unlockUiForInference() {
+  if (!_inferenceSavedDisabled) return;
+  for (const id of INFERENCE_LOCK_IDS) {
+    if (!(id in _inferenceSavedDisabled)) continue;
+    const el = document.getElementById(id);
+    if (el) el.disabled = _inferenceSavedDisabled[id];
+  }
+  document.querySelectorAll(".tab-nav button[data-tab]").forEach((b) => {
+    const key = "__tab__" + b.dataset.tab;
+    if (key in _inferenceSavedDisabled) b.disabled = _inferenceSavedDisabled[key];
+  });
+  for (const containerId of ["body-params-sliders", "bone-lengths-sliders", "blendshapes-sliders"]) {
+    const c = document.getElementById(containerId);
+    if (!c) continue;
+    c.querySelectorAll("input, select, button").forEach((el) => {
+      el.disabled = false;
+    });
+  }
+  _inferenceSavedDisabled = null;
+}
+
+// Swap a run button into / out of "stop" mode: red styling + new label.
+// `runI18nKey` and `stopI18nKey` are the data-i18n keys for the two states
+// so language switches keep the right text.
+function _setRunButtonRunning(btn, running, runI18nKey, stopI18nKey) {
+  if (!btn) return;
+  if (running) {
+    btn.classList.add("is-running");
+    btn.dataset.i18n = stopI18nKey;
+    btn.textContent = window.i18n?.t(stopI18nKey) || "推定を停止";
+  } else {
+    btn.classList.remove("is-running");
+    btn.dataset.i18n = runI18nKey;
+    btn.textContent = window.i18n?.t(runI18nKey)
+      || (runI18nKey === "video.run" ? "モーションを推定" : "ポーズを推定");
+  }
+}
+
+function beginInference(runBtnEl, runI18nKey, stopI18nKey) {
   currentAbortController = new AbortController();
   inferenceLocked = true;
-  if (cancelBtn) cancelBtn.hidden = false;
-  _lockTabs(true);
+  lockUiForInference(runBtnEl);
+  _setRunButtonRunning(runBtnEl, true, runI18nKey, stopI18nKey);
+  // The running button itself must stay clickable so the user can stop.
+  if (runBtnEl) runBtnEl.disabled = false;
   return currentAbortController.signal;
 }
 
-function endInference(cancelBtn) {
+function endInference(runBtnEl, runI18nKey, stopI18nKey) {
   inferenceLocked = false;
-  if (cancelBtn) cancelBtn.hidden = true;
+  unlockUiForInference();
+  _setRunButtonRunning(runBtnEl, false, runI18nKey, stopI18nKey);
   currentAbortController = null;
-  _lockTabs(false);
 }
 
 function cancelInference() {
@@ -2201,20 +2303,22 @@ function triggerDownload(url, filename) {
   a.remove();
 }
 
-runCancelBtn.addEventListener("click", cancelInference);
-
 // ---------------------------------------------------------------------------
 // Pipeline run
 // ---------------------------------------------------------------------------
 
 runBtn.addEventListener("click", async () => {
+  // The run button doubles as the stop button while inference is in flight.
+  if (inferenceLocked) {
+    cancelInference();
+    return;
+  }
   if (!selectedFile) return;
-  runBtn.disabled = true;
   statusEl.textContent = "processing…";
   statusEl.classList.add("busy"); statusEl.classList.remove("ok", "err");
   runInfo.textContent = "推論実行中…";
 
-  const signal = beginInference(runCancelBtn);
+  const signal = beginInference(runBtn, "input.run", "input.stop");
   const form = new FormData();
   form.append("image", selectedFile);
   try {
@@ -2262,8 +2366,7 @@ runBtn.addEventListener("click", async () => {
       statusEl.classList.add("err"); statusEl.classList.remove("busy", "ok");
     }
   } finally {
-    runBtn.disabled = false;
-    endInference(runCancelBtn);
+    endInference(runBtn, "input.run", "input.stop");
   }
 });
 
@@ -2427,7 +2530,6 @@ const videoDrop = $("video-drop");
 const videoLabel = $("video-label");
 const videoInfo = $("video-info");
 const videoRunBtn = $("video-run-btn");
-const videoCancelBtn = $("video-cancel-btn");
 const videoRunInfo = $("video-run-info");
 const videoDownloadBtn = $("video-download-btn");
 const videoDownloadBvhBtn = $("video-download-bvh-btn");
@@ -2483,16 +2585,19 @@ videoDrop.addEventListener("drop", (e) => {
 // immediately afterward with the currently-selected character settings
 // so the user sees the rig animate right away; subsequent preset/JSON
 // changes call only Phase 2.
-videoCancelBtn.addEventListener("click", cancelInference);
-
 videoRunBtn.addEventListener("click", async () => {
+  // Same toggle pattern as the image-tab run button: while inference is in
+  // flight a click on the (now-red) button cancels.
+  if (inferenceLocked) {
+    cancelInference();
+    return;
+  }
   if (!selectedVideo) return;
-  videoRunBtn.disabled = true;
   // Button is shown again only when rebuildAnimatedFbx finishes successfully.
   videoDownloadBtn.hidden = true;
   videoDownloadBvhBtn.hidden = true;
   videoRunInfo.textContent = "Running motion inference (minutes for long clips)…";
-  const signal = beginInference(videoCancelBtn);
+  const signal = beginInference(videoRunBtn, "video.run", "video.stop");
   const form = new FormData();
   form.append("video", selectedVideo);
   form.append("fps", $("video-fps").value || "0");
@@ -2519,8 +2624,7 @@ videoRunBtn.addEventListener("click", async () => {
       videoRunInfo.textContent = `video FBX error: ${e.message || e}`;
     }
   } finally {
-    videoRunBtn.disabled = false;
-    endInference(videoCancelBtn);
+    endInference(videoRunBtn, "video.run", "video.stop");
   }
 });
 

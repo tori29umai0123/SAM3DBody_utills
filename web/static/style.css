@@ -94,6 +94,15 @@ button:disabled {
   border-radius: 4px; cursor: pointer;
 }
 .cancel-btn:hover:not(:disabled) { background: #733; }
+/* While inference is in flight the run button itself becomes the
+   stop button (red), so the layout doesn't shift between two buttons. */
+#run-btn.is-running, #video-run-btn.is-running {
+  background: #5a2a2a; color: #fcc; border-color: #944;
+}
+#run-btn.is-running:hover:not(:disabled),
+#video-run-btn.is-running:hover:not(:disabled) {
+  background: #733;
+}
 /* Tab nav is disabled while inference is in flight. */
 .tab-nav button:disabled {
   background: #1a1c20; color: #556; border-color: #222;

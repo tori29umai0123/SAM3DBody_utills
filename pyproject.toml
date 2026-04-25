@@ -38,6 +38,8 @@ dependencies = [
     "huggingface_hub>=1.0.0",
     "einops>=0.8.0",
     "timm>=1.0.24",
+    # birefnet/lite/birefnet.py が kornia.filters.laplacian を使うため必須
+    "kornia>=0.7.0",
 
     # decord は video フレーム読込の fast path だが、Linux aarch64 に
     # wheel が無く、かつ image-mode 推論では使われないため外す。
