@@ -47,6 +47,32 @@
           <span id="file-label" data-i18n="input.drop">クリックして画像を選択 / ドロップ</span>
           <img id="preview" alt="preview" hidden />
         </label>
+
+        <!-- Optional per-hand crops. Drag&drop or click; the 左右反転 button
+             flips the loaded image in place. When provided, /api/process
+             runs the hand-only decoder on each crop and overrides the
+             body's hand pose. -->
+        <div class="hand-input-row">
+          <label class="file-drop compact hand-drop" id="lhand-drop">
+            <input type="file" id="lhand-file-input" accept="image/*" />
+            <span id="lhand-file-label" data-i18n="input.lhand_drop">Left hand image</span>
+            <img id="lhand-preview" alt="left hand" hidden />
+          </label>
+          <button type="button" id="lhand-flip-btn" class="hand-flip-btn"
+                  disabled data-i18n="input.flip_lr"
+                  data-i18n-title="tooltip.hand_flip">左右反転</button>
+        </div>
+        <div class="hand-input-row">
+          <label class="file-drop compact hand-drop" id="rhand-drop">
+            <input type="file" id="rhand-file-input" accept="image/*" />
+            <span id="rhand-file-label" data-i18n="input.rhand_drop">Right hand image</span>
+            <img id="rhand-preview" alt="right hand" hidden />
+          </label>
+          <button type="button" id="rhand-flip-btn" class="hand-flip-btn"
+                  disabled data-i18n="input.flip_lr"
+                  data-i18n-title="tooltip.hand_flip">左右反転</button>
+        </div>
+
         <button id="run-btn" disabled data-i18n="input.run">ポーズを推定</button>
         <div id="run-info" class="muted"></div>
       </section>
@@ -261,9 +287,31 @@
   <section id="viewport" data-tab-show="image video make">
     <canvas id="three-canvas"></canvas>
     <div id="viewport-overlay" class="muted" data-i18n="viewport.initial">画像を読み込んで「ポーズを推定」を押すと 3D メッシュが表示されます</div>
+    <!-- Range-capture mode entry / exit. Stays in place while toggled; the
+         CSS theme swaps to red while ``body.range-capture-mode`` is on. -->
     <button id="save-render-btn" class="viewport-btn" data-tab-show="image" data-pose-lock
-            disabled data-i18n="viewport.save_png"
-            data-i18n-title="tooltip.save_png">PNG 保存</button>
+            disabled data-i18n="viewport.range_enter"
+            data-i18n-title="tooltip.range_enter">指定範囲撮影</button>
+    <!-- Capture-mode action buttons. ``hidden`` until the user enters range
+         mode; ``body.range-capture-mode`` reveals them via CSS. -->
+    <button id="capture-shot-btn" type="button" data-tab-show="image"
+            data-i18n="viewport.capture"
+            data-i18n-title="tooltip.capture_shot">撮影</button>
+    <button id="bg-color-btn" type="button" data-tab-show="image"
+            data-i18n-title="tooltip.bg_color">
+      <span id="bg-color-swatch"></span>
+      <span data-i18n="viewport.bg_color">背景色指定</span>
+      <input type="color" id="bg-color-input" value="#ffffff" />
+    </button>
+    <button id="range-reset-btn" type="button" data-tab-show="image"
+            data-i18n="viewport.range_reset"
+            data-i18n-title="tooltip.range_reset">リセット</button>
+    <!-- D&D selection overlay (red translucent rect). pointer-events follow
+         the ``body.range-capture-mode`` class so the rest of the viewport
+         (orbit controls, etc.) is unaffected outside of capture mode. -->
+    <div id="range-overlay">
+      <div id="range-rect" hidden></div>
+    </div>
   </section>
   <section id="admin-placeholder" data-tab-show="admin" hidden>
     <div class="placeholder">

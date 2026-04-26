@@ -141,13 +141,110 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
   background: rgba(0,0,0,0.55); border-radius: 4px; pointer-events: none;
   max-width: 320px; font-size: 11px; }
 
-/* Corner-mounted viewer controls (PNG save, etc.) */
+/* Corner-mounted viewer controls (range-capture entry, etc.) */
 .viewport-btn { position: absolute; top: 12px; left: 12px; padding: 6px 12px;
   background: rgba(30, 46, 60, 0.85); color: #cef; border: 1px solid #588;
   border-radius: 4px; font-size: 12px; cursor: pointer; backdrop-filter: blur(2px); }
 .viewport-btn:hover:not(:disabled) { background: rgba(52, 82, 100, 0.9); }
 .viewport-btn:disabled { background: rgba(34, 36, 42, 0.7); color: #667;
   border-color: #333; cursor: not-allowed; }
+
+/* -------------------------------------------------------------------------
+ * Range-capture mode (image tab only).
+ *
+ * Entry button (#save-render-btn) toggles ``body.range-capture-mode``.
+ * While the class is set: red overlay accepts D&D, action buttons are
+ * shown, the rest of the UI is dimmed and pointer-disabled. Buttons stack
+ * vertically below the entry button.
+ *
+ * NOTE on stacking: the range overlay sits on top of the canvas to catch
+ * D&D pixels, so every clickable control (entry / shot / bg / reset) needs
+ * a higher z-index than the overlay or the click goes to the overlay
+ * instead and 撮影終了 stops working.
+ * ---------------------------------------------------------------------- */
+#save-render-btn { z-index: 7; }
+#range-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+body.range-capture-mode #range-overlay { pointer-events: auto; cursor: crosshair; }
+#range-rect {
+  position: absolute; border: 2px solid #ff5050;
+  background: rgba(255, 0, 0, 0.28);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45) inset;
+  pointer-events: none;
+}
+#range-rect[hidden] { display: none; }
+
+/* Capture-mode action buttons live on the left edge below the entry
+   button. ``display: none`` by default; revealed only in capture mode. */
+#capture-shot-btn, #range-reset-btn, #bg-color-btn {
+  position: absolute; left: 12px; display: none; z-index: 7;
+  padding: 6px 12px; font-size: 12px; cursor: pointer;
+  border-radius: 4px; backdrop-filter: blur(2px);
+}
+#capture-shot-btn { top: 50px; background: rgba(46, 80, 56, 0.9);
+  color: #cfd; border: 1px solid #6a8; }
+#capture-shot-btn:hover:not(:disabled) { background: rgba(60, 100, 70, 0.95); }
+#capture-shot-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+#bg-color-btn { top: 88px; background: rgba(30, 46, 60, 0.9);
+  color: #cef; border: 1px solid #588;
+  display: none; align-items: center; gap: 8px;
+}
+#bg-color-btn:hover { background: rgba(52, 82, 100, 0.95); }
+#bg-color-swatch {
+  width: 18px; height: 18px; border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.6); background: #ffffff;
+  flex: 0 0 18px;
+}
+#bg-color-input {
+  position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0;
+}
+
+#range-reset-btn { top: 126px; background: rgba(60, 32, 32, 0.9);
+  color: #fcc; border: 1px solid #944; }
+#range-reset-btn:hover:not(:disabled) { background: rgba(110, 50, 50, 0.95); }
+#range-reset-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+body.range-capture-mode #capture-shot-btn,
+body.range-capture-mode #range-reset-btn { display: inline-block; }
+body.range-capture-mode #bg-color-btn { display: inline-flex; }
+
+/* Entry button switches to a "finish" theme while capture mode is on. */
+body.range-capture-mode #save-render-btn {
+  background: rgba(110, 60, 60, 0.9); color: #fcc; border-color: #944;
+}
+
+/* Lock everything outside the capture-mode controls. The Z-stack means the
+   four allowed buttons (#save-render-btn, #capture-shot-btn, #bg-color-btn,
+   #range-reset-btn) stay clickable; the red overlay handles drags. */
+body.range-capture-mode #sidebar,
+body.range-capture-mode .tab-nav,
+body.range-capture-mode .lang-picker {
+  pointer-events: none; user-select: none; opacity: 0.45;
+}
+
+/* Hand image input row: drop area + 左右反転 button on one line. */
+.hand-input-row {
+  display: flex; gap: 6px; align-items: stretch; margin-top: 6px;
+}
+.hand-input-row .file-drop {
+  flex: 1 1 auto; margin-top: 0;
+}
+.hand-input-row .hand-flip-btn {
+  flex: 0 0 auto; padding: 4px 10px; font-size: 11px;
+  background: #355; color: #cef; border: 1px solid #588;
+  border-radius: 4px; cursor: pointer;
+}
+.hand-input-row .hand-flip-btn:hover:not(:disabled) {
+  background: rgba(85, 119, 136, 0.9);
+}
+.hand-input-row .hand-flip-btn:disabled {
+  background: rgba(34, 36, 42, 0.7); color: #667;
+  border-color: #333; cursor: not-allowed;
+}
+.hand-drop img {
+  display: block; max-width: 100%; max-height: 96px;
+  margin: 4px auto 0; border: 1px solid #2a2a2a; border-radius: 3px;
+}
 
 /* Applied to <body> while the animated FBX rebuild is in flight — blocks
    pointer events on sidebar / tab nav so users can't tweak sliders or

@@ -17,6 +17,17 @@ A standalone FastAPI + Three.js web app for turning a single image or video into
 
 - The app builds a retargetable rig from the estimated pose.
 - Pose edits, body shape changes, and lean correction are baked into FBX / BVH export.
+- **Hand-image overrides**:
+  - Below the main input there are drag-and-drop slots for **Left hand image** / **Right hand image**, each with a "Mirror" button.
+  - Mirror flips the loaded image at the pixel level on a canvas so the bytes sent to the server match what you see.
+  - When you provide a hand image and press "Run pose estimation", the server runs a hand-only decoder pass on each crop and overrides the body's `hand_pose_params[:54]` (left) / `[54:]` (right). Wrist orientation from the body decoder is preserved.
+- **Range-capture mode** (renamed from "Save PNG"):
+  - The viewport's top-left **"Range capture"** button enters the mode. The label becomes **"Finish capture"** and three more buttons (`Capture` / `Background color` / `Reset`) plus a red translucent drag-and-drop overlay appear.
+  - While in the mode, the sidebar and tab nav are pointer-event-locked — only those buttons and the drag rectangle are interactive.
+  - **Capture**: writes a PNG of the selected rectangle (or the full viewport if no range is set), painted onto the chosen background color (default white).
+  - **Background color**: a color picker for the saved PNG's background.
+  - **Reset**: clears just the red rectangle.
+  - **Finish capture**: leaves the mode — the auxiliary buttons and the red overlay disappear, the entry button reverts to "Range capture", and the saved range is cleared.
 
 ### Video
 

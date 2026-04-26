@@ -19,11 +19,15 @@ async def process_image(
     request: Request,
     image: UploadFile = File(...),
     inference_type: str = "full",
+    left_hand_image: UploadFile | None = File(None),
+    right_hand_image: UploadFile | None = File(None),
 ):
     """Run segmentation + pose estimation on the uploaded image.
 
     Segmentation parameters come from ``config.ini [segmentation]`` — edit the ini to change
-    them. Inference type stays on the URL since it's a per-call choice."""
+    them. Inference type stays on the URL since it's a per-call choice.
+    Optional ``left_hand_image`` / ``right_hand_image`` multipart fields
+    trigger a hand-only decoder pass that overrides the body's hand pose."""
     if image.content_type and not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=f"expected image/*, got {image.content_type}")
 
@@ -38,6 +42,23 @@ async def process_image(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"could not decode image: {exc}") from exc
 
+    async def _decode_optional(upload: UploadFile | None) -> Image.Image | None:
+        if upload is None:
+            return None
+        try:
+            data = await upload.read()
+            if not data:
+                return None
+            im = Image.open(io.BytesIO(data))
+            im.load()
+            return _normalize_input_image(im)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("hand image decode failed: %s", exc)
+            return None
+
+    pil_lhand = await _decode_optional(left_hand_image)
+    pil_rhand = await _decode_optional(right_hand_image)
+
     # Read fresh every call so config.ini edits hot-reload.
     settings = AppSettings.load()
     segmentation = settings.segmentation
@@ -51,6 +72,8 @@ async def process_image(
             min_width_pixels=segmentation.min_width_pixels,
             min_height_pixels=segmentation.min_height_pixels,
             device_mode=settings.device,
+            left_hand_image=pil_lhand,
+            right_hand_image=pil_rhand,
         )
     except Exception as exc:
         log.exception("pipeline failed")

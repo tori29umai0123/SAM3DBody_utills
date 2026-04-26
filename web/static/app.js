@@ -1233,6 +1233,49 @@ function initViewer() {
     }
   }
 
+  // Capture the current viewport to a PNG with a custom background color
+  // and (optionally) cropped to a backing-store-pixel rectangle. The grid
+  // is hidden and the clear color swapped for the capture, then restored.
+  // Returns the data URL (or null if the encode fails). The optional
+  // ``filename`` triggers a download — pass null to just receive the URL.
+  function captureToPng({ bgColor = 0xffffff, cropRect = null, filename = null } = {}) {
+    const prevClearColor = renderer.getClearColor(new THREE.Color());
+    const prevClearAlpha = renderer.getClearAlpha();
+    const prevGridVisible = grid.visible;
+    renderer.setClearColor(bgColor, 1);
+    grid.visible = false;
+    let resultUrl = null;
+    try {
+      renderer.render(scene, camera);
+      if (cropRect && cropRect.width > 0 && cropRect.height > 0) {
+        const cw = canvas.width, ch = canvas.height;
+        const sx = Math.max(0, Math.min(cw - 1, Math.round(cropRect.x)));
+        const sy = Math.max(0, Math.min(ch - 1, Math.round(cropRect.y)));
+        const sw = Math.max(1, Math.min(cw - sx, Math.round(cropRect.width)));
+        const sh = Math.max(1, Math.min(ch - sy, Math.round(cropRect.height)));
+        const off = document.createElement("canvas");
+        off.width = sw; off.height = sh;
+        off.getContext("2d").drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+        resultUrl = off.toDataURL("image/png");
+      } else {
+        resultUrl = canvas.toDataURL("image/png");
+      }
+      if (filename && resultUrl) {
+        const a = document.createElement("a");
+        a.href = resultUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } finally {
+      renderer.setClearColor(prevClearColor, prevClearAlpha);
+      grid.visible = prevGridVisible;
+      _dirty = true;
+    }
+    return resultUrl;
+  }
+
   // Wipe the Hips drag translation and snap meshGroup back to the fit
   // anchor. Used by the outer code when a fresh pose is estimated and
   // any prior body translation should be discarded.
@@ -1255,12 +1298,14 @@ function initViewer() {
   }
 
   return {
-    loadObj, loadFbxAnimated, savePng, switchTab, hasCachedMesh, clearMesh,
+    loadObj, loadFbxAnimated, savePng, captureToPng, switchTab, hasCachedMesh, clearMesh,
     enterPoseEdit, exitPoseEdit, selectPoseBone, resetPoseBone,
     resetAllPoseBones, setPoseBoneLocalEuler, getPoseBoneLocalEuler,
     setPoseEditCallbacks, clearHipsTranslation,
     getHipsOffset, setHipsOffset,
     isPoseEditActive: () => poseEdit.active,
+    getCanvasSize: () => ({ width: canvas.width, height: canvas.height }),
+    getCanvasClientSize: () => ({ width: canvas.clientWidth, height: canvas.clientHeight }),
   };
 }
 
@@ -2185,6 +2230,7 @@ const INFERENCE_LOCK_IDS = [
   "pose-undo-btn", "pose-redo-btn",
   "pose-reset-bone-btn", "pose-reset-all-btn",
   "save-render-btn",
+  "capture-shot-btn", "bg-color-btn", "range-reset-btn",
   "export-fbx-btn", "export-bvh-btn",
   // Video tab
   "video-input",
@@ -2321,6 +2367,21 @@ runBtn.addEventListener("click", async () => {
   const signal = beginInference(runBtn, "input.run", "input.stop");
   const form = new FormData();
   form.append("image", selectedFile);
+  // Optional per-hand crops. The server runs the hand-only decoder on
+  // each one and overrides the body's hand pose; absent fields are
+  // ignored. Filenames are arbitrary — the API keys (left_hand_image /
+  // right_hand_image) are what matter.
+  try {
+    const hands = window.__sam3dGetHandImages?.() || {};
+    if (hands.left?.dataUrl) {
+      const blob = window.__sam3dDataUrlToBlob?.(hands.left.dataUrl);
+      if (blob) form.append("left_hand_image", blob, "left_hand.png");
+    }
+    if (hands.right?.dataUrl) {
+      const blob = window.__sam3dDataUrlToBlob?.(hands.right.dataUrl);
+      if (blob) form.append("right_hand_image", blob, "right_hand.png");
+    }
+  } catch (e) { console.warn("[3DBody] attaching hand images failed:", e); }
   try {
     const r = await fetch("/api/process", { method: "POST", body: form, signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
@@ -2768,17 +2829,193 @@ videoDownloadBvhBtn?.addEventListener("click", async () => {
 
 // ---------------------------------------------------------------------------
 
-// Wire the PNG save button on the 3D viewer overlay. Stays disabled until a
-// mesh has been rendered at least once (otherwise you get a blank viewport PNG).
-document.getElementById("save-render-btn")?.addEventListener("click", async () => {
-  if (!renderAvailable) return;
-  const base = currentJobId ? `render_${currentJobId}` : `render_${Date.now()}`;
-  try {
-    await viewer.savePng(`${base}.png`);
-  } catch (e) {
-    console.error("save PNG failed:", e);
+// ---------------------------------------------------------------------------
+// Range-capture mode (image tab).
+//
+// The viewport entry button (#save-render-btn) toggles ``body.range-capture-mode``.
+// While the class is set:
+//   * a red translucent overlay accepts D&D for a crop rectangle,
+//   * action buttons (撮影 / 背景色指定 / リセット) are revealed,
+//   * the rest of the UI is dimmed (CSS), so only the four buttons + drag
+//     are interactive.
+// 撮影終了 (i.e. clicking the entry button again) hides the overlay and
+// the buttons; the saved rect is dropped so the next entry starts fresh.
+// ---------------------------------------------------------------------------
+(function initRangeCaptureUi() {
+  const state = {
+    mode: false,
+    bgColor: "#ffffff",
+    rect: null,        // backing-store px {x, y, width, height} for capture
+    rectClient: null,  // overlay-relative px for the on-screen rectangle
+  };
+
+  const entryBtn   = document.getElementById("save-render-btn");
+  const shotBtn    = document.getElementById("capture-shot-btn");
+  const bgBtn      = document.getElementById("bg-color-btn");
+  const bgInput    = document.getElementById("bg-color-input");
+  const bgSwatch   = document.getElementById("bg-color-swatch");
+  const resetBtn   = document.getElementById("range-reset-btn");
+  const overlayEl  = document.getElementById("range-overlay");
+  const rectEl     = document.getElementById("range-rect");
+  const viewportEl = document.getElementById("viewport");
+
+  function setBgColor(hex) {
+    state.bgColor = hex || "#ffffff";
+    if (bgSwatch) bgSwatch.style.background = state.bgColor;
+    if (bgInput && bgInput.value !== state.bgColor) bgInput.value = state.bgColor;
   }
-});
+  setBgColor(state.bgColor);
+  if (bgBtn && bgInput) {
+    bgBtn.addEventListener("click", (ev) => {
+      if (ev.target === bgInput) return;
+      bgInput.click();
+    });
+    bgInput.addEventListener("input", () => setBgColor(bgInput.value));
+    bgInput.addEventListener("change", () => setBgColor(bgInput.value));
+  }
+
+  // --- Range rectangle handling ----------------------------------------
+  function clientRectToBacking(c) {
+    if (!viewer.getCanvasSize || !viewer.getCanvasClientSize) return null;
+    const back = viewer.getCanvasSize();
+    const front = viewer.getCanvasClientSize();
+    const sx = back.width  / Math.max(front.width,  1);
+    const sy = back.height / Math.max(front.height, 1);
+    return { x: c.x * sx, y: c.y * sy, width: c.width * sx, height: c.height * sy };
+  }
+  function showRect(client) {
+    if (!rectEl) return;
+    rectEl.hidden = false;
+    rectEl.style.left   = `${client.x}px`;
+    rectEl.style.top    = `${client.y}px`;
+    rectEl.style.width  = `${client.width}px`;
+    rectEl.style.height = `${client.height}px`;
+    state.rectClient = { ...client };
+    state.rect = clientRectToBacking(client);
+    if (resetBtn) resetBtn.disabled = !state.rect;
+  }
+  function hideRect() {
+    if (rectEl) rectEl.hidden = true;
+  }
+  function clearRect() {
+    state.rect = null;
+    state.rectClient = null;
+    hideRect();
+    if (resetBtn) resetBtn.disabled = true;
+  }
+
+  function updateEntryLabel() {
+    if (!entryBtn) return;
+    const key = state.mode ? "viewport.range_exit" : "viewport.range_enter";
+    entryBtn.dataset.i18n = key;
+    entryBtn.textContent = window.i18n?.t(key) ||
+      (state.mode ? "撮影終了" : "指定範囲撮影");
+  }
+
+  function setMode(on) {
+    state.mode = !!on;
+    if (state.mode) {
+      document.body.classList.add("range-capture-mode");
+      // On a fresh entry the overlay simply waits for a drag.
+      hideRect();
+    } else {
+      // 撮影終了: drop the body class so CSS hides 撮影 / 背景色指定 /
+      // リセット, hide the red overlay, and forget the saved rect so the
+      // next 指定範囲撮影 starts from scratch. (Deliberate difference from
+      // the ComfyUI pose-editor variant, which keeps the rect.)
+      document.body.classList.remove("range-capture-mode");
+      clearRect();
+    }
+    updateEntryLabel();
+    if (resetBtn) resetBtn.disabled = !state.rect;
+  }
+
+  // Drag-to-define logic. Pointer events fire only when body has the
+  // ``range-capture-mode`` class (CSS toggles overlay pointer-events).
+  let dragging = false;
+  let startX = 0, startY = 0;
+  if (overlayEl) {
+    overlayEl.addEventListener("pointerdown", (ev) => {
+      if (!state.mode) return;
+      const r = overlayEl.getBoundingClientRect();
+      startX = ev.clientX - r.left;
+      startY = ev.clientY - r.top;
+      dragging = true;
+      try { overlayEl.setPointerCapture(ev.pointerId); } catch (_e) {}
+      showRect({ x: startX, y: startY, width: 1, height: 1 });
+      ev.preventDefault();
+    });
+    overlayEl.addEventListener("pointermove", (ev) => {
+      if (!dragging) return;
+      const r = overlayEl.getBoundingClientRect();
+      const cx = Math.max(0, Math.min(r.width,  ev.clientX - r.left));
+      const cy = Math.max(0, Math.min(r.height, ev.clientY - r.top));
+      const x = Math.min(startX, cx);
+      const y = Math.min(startY, cy);
+      const w = Math.abs(cx - startX);
+      const h = Math.abs(cy - startY);
+      showRect({ x, y, width: w, height: h });
+    });
+    const endDrag = (ev) => {
+      if (!dragging) return;
+      dragging = false;
+      try { overlayEl.releasePointerCapture(ev.pointerId); } catch (_e) {}
+      // Drop tiny rectangles (likely an accidental tap).
+      if (state.rect && (state.rect.width < 4 || state.rect.height < 4)) {
+        clearRect();
+      }
+    };
+    overlayEl.addEventListener("pointerup", endDrag);
+    overlayEl.addEventListener("pointercancel", endDrag);
+  }
+
+  // Wire entry / shot / reset buttons.
+  if (entryBtn) {
+    entryBtn.addEventListener("click", () => {
+      // Currently in capture mode → 撮影終了 click MUST always exit
+      // cleanly: drop the body class, hide the auxiliary buttons + the
+      // red overlay, and revert the label to 指定範囲撮影.
+      if (state.mode) {
+        setMode(false);
+        return;
+      }
+      // Otherwise we're entering — require a rendered mesh first.
+      if (!renderAvailable) return;
+      setMode(true);
+    });
+    updateEntryLabel();
+    document.addEventListener("body3d:langchange", updateEntryLabel);
+  }
+  if (shotBtn) {
+    shotBtn.addEventListener("click", async () => {
+      if (!state.mode || !renderAvailable) return;
+      const base = currentJobId ? `render_${currentJobId}` : `render_${Date.now()}`;
+      try {
+        const bgHex = (() => {
+          const t = new THREE.Color(state.bgColor);
+          return t.getHex();
+        })();
+        viewer.captureToPng({
+          bgColor: bgHex,
+          cropRect: state.rect,
+          filename: `${base}.png`,
+        });
+      } catch (e) {
+        console.error("capture failed:", e);
+      }
+    });
+  }
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => clearRect());
+    resetBtn.disabled = true;
+  }
+
+  // Public hook: the run handler / pose-edit code may want to nuke the
+  // capture mode (e.g. fresh inference).
+  window.__sam3dExitRangeCapture = function () {
+    if (state.mode) setMode(false);
+  };
+})();
 
 // Character Make tab: download the current slider values as a standalone
 // character JSON (same schema as chara_settings_presets/*.json, drop-in
@@ -2844,5 +3081,143 @@ async function boot() {
     setInterval(pollHealth, 15_000);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Optional per-hand image inputs (image tab).
+//
+// Each side gets a drop area + 左右反転 button. The dataUrl stored here is
+// POSTed alongside the main image to /api/process so the server can run
+// the hand decoder and override the body's hand pose. Mirroring is done
+// in pixel-space via a canvas (not CSS) so the bytes that hit the server
+// match what the user sees.
+// ---------------------------------------------------------------------------
+(function initHandImageInputs() {
+  const state = {
+    handLImage: null,  // {dataUrl, width, height}
+    handRImage: null,
+  };
+
+  function _decodeFileToImage(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const url = r.result;
+        const im = new Image();
+        im.onload = () => resolve({ dataUrl: url, width: im.naturalWidth, height: im.naturalHeight });
+        im.onerror = () => reject(new Error("hand image decode failed"));
+        im.src = url;
+      };
+      r.onerror = () => reject(r.error || new Error("file read failed"));
+      r.readAsDataURL(file);
+    });
+  }
+  function _renderPreview(side, cap) {
+    const previewEl = document.getElementById(`${side}hand-preview`);
+    const labelEl = document.getElementById(`${side}hand-file-label`);
+    const flipBtn = document.getElementById(`${side}hand-flip-btn`);
+    if (cap) {
+      if (previewEl) { previewEl.src = cap.dataUrl; previewEl.hidden = false; }
+      if (labelEl) labelEl.textContent = `${cap.width}×${cap.height}`;
+      if (flipBtn) flipBtn.disabled = false;
+    } else {
+      if (previewEl) { previewEl.removeAttribute("src"); previewEl.hidden = true; }
+      if (labelEl) {
+        const key = side === "l" ? "input.lhand_drop" : "input.rhand_drop";
+        labelEl.textContent =
+          window.i18n?.t(key) || (side === "l" ? "Left hand image" : "Right hand image");
+      }
+      if (flipBtn) flipBtn.disabled = true;
+    }
+  }
+  async function _handleFile(side, file) {
+    if (!file) return;
+    try {
+      const cap = await _decodeFileToImage(file);
+      if (side === "l") state.handLImage = cap; else state.handRImage = cap;
+      _renderPreview(side, cap);
+    } catch (exc) {
+      console.warn(`[3DBody] ${side}hand load failed:`, exc);
+    }
+  }
+  function _mirrorDataUrl(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => {
+        const off = document.createElement("canvas");
+        off.width = im.naturalWidth;
+        off.height = im.naturalHeight;
+        const ctx = off.getContext("2d");
+        ctx.translate(off.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(im, 0, 0);
+        resolve({ dataUrl: off.toDataURL("image/png"), width: off.width, height: off.height });
+      };
+      im.onerror = () => reject(new Error("mirror decode failed"));
+      im.src = dataUrl;
+    });
+  }
+  async function _flipHand(side) {
+    const cur = side === "l" ? state.handLImage : state.handRImage;
+    if (!cur) return;
+    try {
+      const flipped = await _mirrorDataUrl(cur.dataUrl);
+      if (side === "l") state.handLImage = flipped; else state.handRImage = flipped;
+      _renderPreview(side, flipped);
+    } catch (exc) {
+      console.warn(`[3DBody] ${side}hand flip failed:`, exc);
+    }
+  }
+
+  for (const side of ["l", "r"]) {
+    const inputEl = document.getElementById(`${side}hand-file-input`);
+    const dropEl  = document.getElementById(`${side}hand-drop`);
+    const flipBtn = document.getElementById(`${side}hand-flip-btn`);
+    if (inputEl) {
+      inputEl.addEventListener("change", (e) => {
+        const f = e.target.files?.[0];
+        if (f) _handleFile(side, f);
+      });
+    }
+    if (dropEl) {
+      ["dragenter", "dragover"].forEach((ev) =>
+        dropEl.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dropEl.classList.add("dragover");
+        }),
+      );
+      ["dragleave", "drop"].forEach((ev) =>
+        dropEl.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dropEl.classList.remove("dragover");
+        }),
+      );
+      dropEl.addEventListener("drop", (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (f) _handleFile(side, f);
+      });
+    }
+    if (flipBtn) flipBtn.addEventListener("click", () => _flipHand(side));
+  }
+
+  // Used by the /api/process run handler to attach the hand crops to the
+  // multipart form. Exposes both the dataUrl (for inspection / debugging)
+  // and a Blob converter for the form.
+  window.__sam3dGetHandImages = function () {
+    return { left: state.handLImage, right: state.handRImage };
+  };
+  window.__sam3dDataUrlToBlob = function (dataUrl) {
+    if (!dataUrl || typeof dataUrl !== "string") return null;
+    const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) return null;
+    try {
+      const bytes = atob(m[2]);
+      const buf = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+      return new Blob([buf], { type: m[1] });
+    } catch (_e) {
+      return null;
+    }
+  };
+})();
 
 boot();
